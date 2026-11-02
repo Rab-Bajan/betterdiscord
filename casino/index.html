@@ -1,0 +1,1280 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#090711">
+    <title>VELVET ROOM — 3D Casino</title>
+    <style>
+        :root {
+            color-scheme: dark;
+            font-family: Inter, "Segoe UI", sans-serif;
+            color: #f8f1ff;
+            background: #090711;
+            font-synthesis: none;
+        }
+
+        * { box-sizing: border-box; }
+        body { margin: 0; min-width: 320px; min-height: 100vh; overflow: hidden; background: #090711; }
+        button { font: inherit; }
+        #world { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+        #hud { position: fixed; inset: 0; pointer-events: none; }
+
+        .topbar {
+            position: absolute;
+            top: 18px;
+            right: 20px;
+            left: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 12px;
+        }
+        .brand, .wallet, .help {
+            border: 1px solid rgba(237, 206, 255, .19);
+            background: rgba(13, 9, 24, .76);
+            box-shadow: 0 10px 35px rgba(0, 0, 0, .28);
+            backdrop-filter: blur(14px);
+        }
+        .brand { padding: 11px 17px; border-radius: 14px; }
+        .brand b { display: block; color: #ffe0a0; font-size: 1rem; letter-spacing: .16em; }
+        .brand span { display: block; margin-top: 3px; color: #b6a9c4; font-size: .68rem; letter-spacing: .13em; }
+        .wallet { padding: 10px 16px; border-radius: 14px; text-align: right; }
+        .wallet span { display: block; color: #b6a9c4; font-size: .68rem; letter-spacing: .14em; text-transform: uppercase; }
+        .wallet strong { display: block; color: #ffe0a0; font-size: 1.28rem; }
+        .wallet strong span { display: inline; color: inherit; font-size: inherit; letter-spacing: normal; text-transform: none; }
+        .online {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            margin-top: 5px;
+            color: #b8f4d2;
+            font-size: .72rem;
+        }
+        .online::before { width: 7px; height: 7px; border-radius: 50%; background: #54f3a0; box-shadow: 0 0 10px #54f3a0; content: ""; }
+        .help { position: absolute; bottom: 20px; left: 20px; max-width: 330px; padding: 11px 14px; border-radius: 12px; color: #d7cbdf; font-size: .78rem; line-height: 1.55; }
+        .help b { color: #fff; }
+        .center-prompt {
+            position: absolute;
+            top: 55%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            padding: 10px 16px;
+            border: 1px solid rgba(255, 225, 160, .4);
+            border-radius: 999px;
+            background: rgba(15, 10, 22, .8);
+            color: #ffe0a0;
+            font-size: .86rem;
+            font-weight: 800;
+            letter-spacing: .06em;
+            opacity: 0;
+            transition: opacity .16s ease;
+            white-space: nowrap;
+            pointer-events: auto;
+            cursor: pointer;
+        }
+        .center-prompt.show { opacity: 1; }
+        .crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 8px;
+            height: 8px;
+            border: 1.5px solid rgba(255, 255, 255, .8);
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            box-shadow: 0 0 8px rgba(255, 255, 255, .5);
+        }
+        .toast {
+            position: absolute;
+            top: 20%;
+            left: 50%;
+            transform: translateX(-50%);
+            color: #ffe0a0;
+            font-size: clamp(1rem, 4vw, 1.6rem);
+            font-weight: 900;
+            text-shadow: 0 3px 22px #000;
+            opacity: 0;
+            transition: opacity .2s ease;
+        }
+        .toast.show { opacity: 1; }
+        .chat {
+            position: absolute;
+            right: 20px;
+            bottom: 20px;
+            width: min(300px, calc(100vw - 40px));
+            pointer-events: auto;
+        }
+        .chat-log {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            max-height: 150px;
+            overflow: auto;
+            margin-bottom: 7px;
+            padding: 9px;
+            border: 1px solid rgba(237, 206, 255, .14);
+            border-radius: 11px;
+            background: rgba(13, 9, 24, .76);
+            color: #ded3e5;
+            font-size: .72rem;
+            backdrop-filter: blur(14px);
+        }
+        .chat-line b { color: #ffe0a0; }
+        .chat-form { display: flex; gap: 6px; }
+        .chat-form input, .name-input {
+            min-width: 0;
+            border: 1px solid rgba(237, 206, 255, .22);
+            border-radius: 10px;
+            background: rgba(13, 9, 24, .86);
+            color: #fff;
+            outline: none;
+        }
+        .chat-form input { flex: 1; padding: 9px 11px; font-size: .77rem; }
+        .chat-form input:focus, .name-input:focus { border-color: #dfb4ff; }
+        .chat-form button { padding: 0 12px; border: 0; border-radius: 10px; background: #754cc1; color: #fff; font-weight: 800; cursor: pointer; }
+
+        .overlay {
+            position: fixed;
+            z-index: 5;
+            inset: 0;
+            display: grid;
+            place-items: center;
+            padding: 16px;
+            background: rgba(5, 4, 12, .72);
+            backdrop-filter: blur(12px);
+        }
+        .overlay.hidden { display: none; }
+        .panel {
+            width: min(100%, 560px);
+            max-height: min(88vh, 780px);
+            overflow: auto;
+            padding: clamp(20px, 5vw, 34px);
+            border: 1px solid rgba(255, 220, 159, .3);
+            border-radius: 24px;
+            background:
+                radial-gradient(ellipse at 50% 0, rgba(163, 89, 213, .23), transparent 56%),
+                linear-gradient(145deg, #21132d, #100c19 75%);
+            box-shadow: 0 30px 100px rgba(0, 0, 0, .7), 0 0 60px rgba(163, 89, 213, .12);
+        }
+        .intro-panel { text-align: center; }
+        .kicker { color: #dfb4ff; font-size: .72rem; font-weight: 850; letter-spacing: .25em; text-transform: uppercase; }
+        h1 { margin: 10px 0; color: #ffe0a0; font-size: clamp(2.2rem, 9vw, 4.2rem); letter-spacing: -.08em; line-height: .98; text-shadow: 0 0 34px rgba(246, 184, 105, .24); }
+        h2 { margin: 0; font-size: 1.5rem; letter-spacing: -.04em; }
+        .intro-copy, .panel-copy { color: #c4b7cc; line-height: 1.65; }
+        .name-input { width: min(100%, 320px); margin: 0 auto; padding: 12px 14px; font-size: .95rem; }
+        .control-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 22px 0; text-align: left; }
+        .control-grid div { padding: 11px; border: 1px solid rgba(255,255,255,.1); border-radius: 12px; background: rgba(255,255,255,.035); }
+        .control-grid b { display: block; color: #ffe0a0; font-size: .83rem; }
+        .control-grid span { display: block; margin-top: 4px; color: #b9acbf; font-size: .7rem; line-height: 1.4; }
+        .primary, .secondary, .chip-button {
+            min-height: 46px;
+            padding: 0 20px;
+            border: 0;
+            border-radius: 12px;
+            color: #1a101b;
+            background: linear-gradient(135deg, #ffe09a, #ffad60);
+            font-weight: 900;
+            cursor: pointer;
+            transition: transform .15s, filter .15s;
+        }
+        .primary:hover, .secondary:hover, .chip-button:hover { transform: translateY(-2px); filter: brightness(1.09); }
+        .secondary { border: 1px solid rgba(236, 202, 255, .22); background: #342244; color: #f8efff; }
+        .danger { border-color: rgba(255, 120, 137, .3); color: #ff9bab; }
+        .panel-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 16px; }
+        .panel-head .kicker { margin-bottom: 5px; }
+        .close-button { width: 38px; height: 38px; border: 1px solid rgba(255,255,255,.14); border-radius: 50%; background: rgba(255,255,255,.06); color: #fff; font-size: 1.2rem; cursor: pointer; }
+        .game-controls { display: flex; justify-content: center; align-items: center; gap: 9px; flex-wrap: wrap; margin-top: 16px; }
+        .chip-button { min-height: 40px; padding: 0 15px; font-size: .88rem; }
+        .game-status { min-height: 26px; margin: 15px 0 2px; color: #ffe0a0; font-weight: 750; text-align: center; }
+        .felt {
+            padding: 20px;
+            border: 1px solid rgba(255,255,255,.15);
+            border-radius: 16px;
+            background: radial-gradient(ellipse at center, #176346, #0c332b 80%);
+            text-align: center;
+        }
+        .hand-label { margin: 8px 0 5px; color: #c7edd9; font-size: .72rem; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+        .cards { display: flex; justify-content: center; gap: 7px; min-height: 87px; flex-wrap: wrap; }
+        .card {
+            display: grid;
+            place-items: center;
+            width: 56px;
+            height: 79px;
+            border: 1px solid #e8dfd1;
+            border-radius: 8px;
+            background: linear-gradient(145deg, #fffefa, #eee8de);
+            color: #241827;
+            font-size: 1rem;
+            font-weight: 900;
+            box-shadow: 0 5px 11px rgba(0,0,0,.2);
+        }
+        .card.red { color: #d13d55; }
+        .card.back { border-color: #e1bd7d; background: repeating-linear-gradient(45deg, #47204d 0 5px, #6b2b61 5px 10px); color: #fce6b0; }
+        .card.held { outline: 3px solid #ffcf71; transform: translateY(-6px); }
+        .poker-table { padding: 16px; border-radius: 18px; background: radial-gradient(ellipse at center, #176346, #0b3028 85%); }
+        .poker-cards { display: flex; justify-content: center; gap: 7px; min-height: 104px; padding: 9px 0; }
+        .poker-cards .card { width: clamp(43px, 12vw, 62px); height: clamp(66px, 17vw, 89px); cursor: pointer; }
+        .poker-cards .card span { pointer-events: none; }
+        .paytable { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; margin-top: 13px; color: #c8bdcf; font-size: .76rem; }
+        .paytable b { color: #ffe0a0; }
+        .modal-footer { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 14px; color: #c4b7cc; font-size: .78rem; }
+        .modal-footer strong { color: #ffe0a0; }
+        @media (max-width: 600px) {
+            .topbar { top: 10px; right: 10px; left: 10px; }
+            .brand { padding: 9px 11px; }
+            .brand b { font-size: .78rem; }
+            .brand span { font-size: .58rem; }
+            .wallet { padding: 8px 11px; }
+            .help { bottom: 10px; left: 10px; max-width: 270px; padding: 9px 11px; font-size: .7rem; }
+            .chat { right: 10px; bottom: 10px; width: min(245px, calc(100vw - 20px)); }
+            .chat-log { max-height: 100px; }
+            .online { font-size: .64rem; }
+            .wallet strong { font-size: 1.05rem; }
+            .help { bottom: 130px; }
+            .control-grid { grid-template-columns: 1fr; }
+            .control-grid div { display: flex; justify-content: space-between; gap: 10px; align-items: center; }
+            .control-grid span { margin: 0; text-align: right; }
+            .cards { gap: 5px; }
+            .card { width: 48px; height: 70px; }
+        }
+    </style>
+</head>
+<body>
+    <canvas id="world" aria-label="Bejárható, háromdimenziós kaszinó"></canvas>
+
+    <div id="hud" aria-live="polite">
+        <div class="topbar">
+            <div class="brand"><b>VELVET ROOM</b><span>NEON CASINO · 3D</span></div>
+            <div class="wallet"><span>Virtuális egyenleg</span><strong><span id="balance">1 000</span> kredit</strong><div class="online"><span id="onlineCount">1 játékos online</span></div><div id="bonusDisplay" style="display:none;color:#ffe0a0;font-size:.7rem">✨ Bónusz pörgetés: <span id="freeSpins">0</span></div></div>
+        </div>
+        <div class="crosshair"></div>
+        <button class="center-prompt" id="prompt" type="button">E — JÁTÉK</button>
+        <div class="toast" id="toast"></div>
+        <div class="help"><b>W A S D</b> mozgás · <b>Egér</b> körbenézés · <b>E</b> játék · <b>ESC</b> kurzor<br>Keress egy asztalt, és nézz rá a megnyitáshoz.</div>
+        <section class="chat" aria-label="Kaszinó chat">
+            <div class="chat-log" id="chatLog"><span class="chat-line">Üdv a Velvet Room közös termében!</span></div>
+            <form class="chat-form" id="chatForm"><input id="chatInput" maxlength="160" autocomplete="off" placeholder="Üzenet a játékosoknak…"><button type="submit">KÜLD</button></form>
+        </section>
+    </div>
+
+    <div class="overlay" id="welcome">
+        <section class="panel intro-panel">
+            <div class="kicker">A játékterem életre kel</div>
+            <h1>VELVET<br>ROOM</h1>
+            <p class="intro-copy">Lépj be a neonfényes kaszinóba. Járd be a termet, ülj asztalhoz, és próbáld ki a szerencséd három különböző játéknál.</p>
+            <input class="name-input" id="playerName" maxlength="20" autocomplete="nickname" placeholder="Mi legyen a neved?" value="">
+            <div class="control-grid">
+                <div><b>W A S D</b><span>Mozgás a kaszinóban</span></div>
+                <div><b>EGÉR</b><span>Kattintás a nézelődéshez, húzás a forgatáshoz</span></div>
+                <div><b>E</b><span>Játék a megcélzott állomásnál</span></div>
+            </div>
+            <button class="primary" id="enterCasino">BELÉPÉS A KASZINÓBA</button>
+            <p class="panel-copy" style="font-size:.72rem;margin-bottom:0">Kizárólag virtuális kreditek — valódi pénz és nyeremény nélkül.</p>
+        </section>
+    </div>
+
+    <div class="overlay hidden" id="gameOverlay">
+        <section class="panel" id="gamePanel"></section>
+    </div>
+
+    <script>
+        window.addEventListener('error', (event) => {
+            if (!(event.target instanceof HTMLScriptElement) || event.target.type !== 'module') return;
+            const toast = document.getElementById('toast');
+            toast.textContent = 'A 3D kaszinó nem töltődött be. Ellenőrizd az internetkapcsolatot és a WebGL-támogatást.';
+            toast.classList.add('show');
+            console.error('A Three.js betöltése sikertelen.', event.target.src);
+        }, true);
+    </script>
+    <script src="/socket.io/socket.io.js"></script>
+    <script type="module">
+        import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js';
+
+        const canvas = document.getElementById('world');
+        const socket = io();
+        function createPlayerId() {
+            const bytes = new Uint8Array(16);
+            if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+                crypto.getRandomValues(bytes);
+            } else {
+                for (let index = 0; index < bytes.length; index += 1) {
+                    bytes[index] = Math.floor(Math.random() * 256);
+                }
+            }
+            bytes[6] = (bytes[6] & 0x0f) | 0x40;
+            bytes[8] = (bytes[8] & 0x3f) | 0x80;
+            const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+            return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+        }
+        const playerId = sessionStorage.getItem('velvetPlayerId') || createPlayerId();
+        sessionStorage.setItem('velvetPlayerId', playerId);
+        const urlParams = new URLSearchParams(window.location.search);
+        const casinoChannelId = urlParams.get('channelId') || 'default';
+        let playerName = urlParams.get('name')
+            ? urlParams.get('name').replace(/[<>]/g, '').trim().slice(0, 20)
+            : (localStorage.getItem('velvetPlayerName') || '');
+        let joinedLobby = false;
+        let hasJoinedLobby = false;
+        let lastNetworkPosition = 0;
+        let freeSpins = 0;
+        const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.8));
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.25;
+
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x090711);
+        scene.fog = new THREE.FogExp2(0x100b1c, 0.014);
+        const camera = new THREE.PerspectiveCamera(74, 1, 0.1, 140);
+        const player = new THREE.Group();
+        player.position.set(0, 1.65, 13.5);
+        player.add(camera);
+        scene.add(player);
+
+        const ambient = new THREE.HemisphereLight(0xc6bcff, 0x24152a, 1.05);
+        scene.add(ambient);
+        const chandelierLight = new THREE.PointLight(0xffce8a, 46, 38, 1.5);
+        chandelierLight.position.set(0, 8, 0);
+        chandelierLight.castShadow = true;
+        chandelierLight.shadow.mapSize.set(1024, 1024);
+        scene.add(chandelierLight);
+        const leftGlow = new THREE.PointLight(0x9945ff, 50, 25, 1.8);
+        leftGlow.position.set(-10, 4.5, -3);
+        scene.add(leftGlow);
+        const rightGlow = new THREE.PointLight(0x16cdeb, 38, 24, 1.8);
+        rightGlow.position.set(10, 4, -4);
+        scene.add(rightGlow);
+        const backGlow = new THREE.PointLight(0xff4d91, 30, 24, 1.8);
+        backGlow.position.set(0, 3.5, -17);
+        scene.add(backGlow);
+
+        const colliders = [];
+        const interactionTargets = [];
+        const clock = new THREE.Clock();
+        const raycaster = new THREE.Raycaster();
+        const center = new THREE.Vector2(0, 0);
+        let activeTarget = null;
+        let balance = 1000;
+        let bet = 50;
+        let locked = false;
+        let lookEnabled = false;
+        let dragLook = null;
+        let pitch = 0;
+        let toastTimer;
+
+        const mats = {
+            wall: standard(0x161221, 0.2, 0.7),
+            floor: standard(0x21192a, 0.42, 0.45),
+            gold: standard(0xd8a851, 0.78, 0.22, 0x56310d, 0.5),
+            darkGold: standard(0x72502b, 0.77, 0.28),
+            velvet: standard(0x491d49, 0.32, 0.54),
+            wood: standard(0x321e2d, 0.55, 0.38),
+            black: standard(0x100d18, 0.32, 0.32),
+            felt: standard(0x126045, 0.08, 0.72),
+            cyan: standard(0x4deaff, 0.28, 0.25, 0x087d96, 1.5),
+            pink: standard(0xff4aa8, 0.32, 0.24, 0x9e124e, 1.6),
+            purple: standard(0x9f55ff, 0.3, 0.25, 0x601cbb, 1.45),
+            warm: standard(0xffcb6c, 0.32, 0.26, 0xc9631a, 1.15)
+        };
+
+        function standard(color, metalness = 0, roughness = 0.5, emissive = 0x000000, intensity = 0) {
+            return new THREE.MeshStandardMaterial({ color, metalness, roughness, emissive, emissiveIntensity: intensity });
+        }
+
+        function box(parent, x, y, z, sx, sy, sz, material, options = {}) {
+            if (![x, y, z, sx, sy, sz].every(Number.isFinite)) {
+                throw new Error(`Invalid 3D box dimensions: ${[x, y, z, sx, sy, sz].join(', ')}`);
+            }
+            const mesh = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), material);
+            mesh.position.set(x, y, z);
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            parent.add(mesh);
+            if (options.collider) colliders.push({ x, z, radius: options.collider, object: parent });
+            if (options.station) mesh.userData.station = options.station;
+            return mesh;
+        }
+
+        function labelTexture(text, background, foreground = '#fff0c1', width = 1024, height = 256) {
+            const c = document.createElement('canvas');
+            c.width = width;
+            c.height = height;
+            const ctx = c.getContext('2d');
+            const gradient = ctx.createLinearGradient(0, 0, width, height);
+            gradient.addColorStop(0, background[0]);
+            gradient.addColorStop(1, background[1]);
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, width, height);
+            ctx.strokeStyle = 'rgba(255,237,189,.7)';
+            ctx.lineWidth = Math.max(4, width / 120);
+            ctx.strokeRect(8, 8, width - 16, height - 16);
+            ctx.fillStyle = foreground;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.font = `900 ${height * .48}px "Segoe UI", sans-serif`;
+            ctx.shadowColor = foreground;
+            ctx.shadowBlur = 18;
+            ctx.fillText(text, width / 2, height / 2, width * .92);
+            const texture = new THREE.CanvasTexture(c);
+            texture.colorSpace = THREE.SRGBColorSpace;
+            return texture;
+        }
+
+        function sign(parent, text, x, y, z, width, height, colors, foreground) {
+            const mesh = new THREE.Mesh(
+                new THREE.PlaneGeometry(width, height),
+                new THREE.MeshBasicMaterial({ map: labelTexture(text, colors, foreground) })
+            );
+            mesh.position.set(x, y, z);
+            parent.add(mesh);
+            return mesh;
+        }
+
+        function cylinder(parent, x, y, z, radiusTop, radiusBottom, height, material, radial = 20) {
+            const mesh = new THREE.Mesh(new THREE.CylinderGeometry(radiusTop, radiusBottom, height, radial), material);
+            mesh.position.set(x, y, z);
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            parent.add(mesh);
+            return mesh;
+        }
+
+        function makeRoom() {
+            box(scene, 0, -0.32, 0, 48, 0.55, 54, mats.floor);
+            box(scene, 0, -0.61, 0, 48, 0.08, 54, mats.darkGold);
+            box(scene, 0, 8, -26, 48, 0.6, 1, mats.wall);
+            box(scene, 0, 4, 26, 48, 8.5, 0.8, mats.wall);
+            box(scene, -23.5, 4, 0, 1, 8.5, 53, mats.wall);
+            box(scene, 23.5, 4, 0, 1, 8.5, 53, mats.wall);
+            box(scene, 0, 8, 0, 48, 0.4, 54, standard(0x100d19, 0.3, 0.65));
+
+            const floorMatA = standard(0x302337, 0.22, 0.45);
+            const floorMatB = standard(0x1b1524, 0.25, 0.5);
+            for (let x = -22; x < 23; x += 2) {
+                for (let z = -25; z < 26; z += 2) {
+                    const tile = new THREE.Mesh(new THREE.PlaneGeometry(1.96, 1.96), ((x + z) / 2) % 2 ? floorMatA : floorMatB);
+                    tile.rotation.x = -Math.PI / 2;
+                    tile.position.set(x + 1, -0.035, z + 1);
+                    tile.receiveShadow = true;
+                    scene.add(tile);
+                }
+            }
+
+            const wallLines = standard(0x61315f, 0.7, 0.3, 0x35103c, 1.2);
+            for (const y of [0.4, 7.45]) {
+                box(scene, 0, y, -25.35, 45, 0.09, 0.1, mats.gold);
+                box(scene, -23, y, 0, 0.1, 0.09, 51, wallLines);
+                box(scene, 23, y, 0, 0.1, 0.09, 51, wallLines);
+            }
+
+            sign(scene, 'VELVET ROOM', 0, 5.75, -25.38, 12, 2.3, ['#20112d', '#6c2453'], '#ffe2a0');
+            sign(scene, 'THE HOUSE OF LUCK', 0, 4.6, -25.37, 8, 0.56, ['#16101e', '#2b1733'], '#eabaff');
+            sign(scene, 'BLACKJACK', -10.1, 4.8, -25.35, 5.2, 1.0, ['#102a28', '#145644'], '#b6ffdf');
+            sign(scene, 'POKER CLUB', 10.1, 4.8, -25.35, 5.2, 1.0, ['#152a39', '#173d5a'], '#a9edff');
+
+            for (const x of [-19, -13, -7, 0, 7, 13, 19]) {
+                const pillar = cylinder(scene, x, 3.85, -12, 0.28, 0.4, 7.7, mats.wood, 16);
+                cylinder(scene, x, 3.8, -12, 0.39, 0.42, 0.12, mats.gold, 24);
+                cylinder(scene, x, 7.65, -12, 0.42, 0.32, 0.18, mats.gold, 24);
+                const ring = new THREE.Mesh(new THREE.TorusGeometry(0.32, 0.035, 8, 24), x % 2 ? mats.cyan : mats.pink);
+                ring.rotation.x = Math.PI / 2;
+                ring.position.set(x, 5.4, -12);
+                scene.add(ring);
+                pillar.userData.decor = true;
+            }
+
+            for (const x of [-18, -9, 0, 9, 18]) {
+                box(scene, x, 7.62, 0, 0.12, 0.12, 51, x % 2 ? mats.pink : mats.cyan);
+            }
+
+            for (const [x, z] of [[-15, -19], [-5, -19], [5, -19], [15, -19], [-15, -5], [15, -5], [-15, 10], [15, 10]]) {
+                const fixture = new THREE.Group();
+                fixture.position.set(x, 7.25, z);
+                scene.add(fixture);
+                cylinder(fixture, 0, 0.17, 0, 0.68, 0.4, 0.17, mats.gold, 32);
+                const orb = new THREE.Mesh(new THREE.SphereGeometry(0.48, 24, 18), new THREE.MeshStandardMaterial({
+                    color: 0xffd28a,
+                    emissive: 0xff8d38,
+                    emissiveIntensity: 1.9,
+                    roughness: 0.18
+                }));
+                orb.position.y = -0.2;
+                fixture.add(orb);
+                const light = new THREE.PointLight(0xffbd72, 5, 8, 2);
+                light.position.y = -0.3;
+                fixture.add(light);
+            }
+
+            // A low lounge, a service bar, and decorative bottle props make the hall feel occupied.
+            makeLounge(-15, 14);
+            makeLounge(15, 14);
+            makeBar();
+            makePlanters();
+        }
+
+        function makeLounge(x, z) {
+            const group = new THREE.Group();
+            group.position.set(x, 0, z);
+            scene.add(group);
+            box(group, 0, 0.7, 0, 4, 0.55, 1.5, mats.velvet);
+            box(group, 0, 1.45, -0.57, 4, 1.25, 0.35, mats.velvet);
+            box(group, 0, 0.34, 0, 4.1, 0.12, 1.5, mats.gold);
+            box(group, -0.72, 0.53, 2, 2.4, 0.25, 1.1, mats.wood);
+            cylinder(group, -1.55, 0.26, 1.55, 0.12, 0.14, 0.5, mats.darkGold);
+            cylinder(group, 0.1, 0.26, 1.55, 0.12, 0.14, 0.5, mats.darkGold);
+            cylinder(group, -0.72, 0.14, 2, 0.66, 0.72, 0.16, mats.gold, 32);
+            colliders.push({ x, z, radius: 2.5 });
+        }
+
+        function makePlanters() {
+            for (const [x, z] of [[-20, 19], [20, 19], [-20, -22], [20, -22], [-19, 2], [19, 2]]) {
+                cylinder(scene, x, 0.25, z, 0.74, 0.88, 0.5, mats.darkGold, 24);
+                cylinder(scene, x, 0.52, z, 0.71, 0.75, 0.1, mats.black, 24);
+                for (let i = 0; i < 6; i += 1) {
+                    const a = i * Math.PI / 3;
+                    const leaf = new THREE.Mesh(
+                        new THREE.ConeGeometry(0.17, 1.5 + (i % 3) * 0.2, 8),
+                        standard(i % 2 ? 0x2f8b62 : 0x43a370, 0.12, 0.58)
+                    );
+                    leaf.position.set(x + Math.cos(a) * 0.34, 1.1, z + Math.sin(a) * 0.34);
+                    leaf.rotation.z = Math.cos(a) * -0.25;
+                    leaf.rotation.x = Math.sin(a) * 0.25;
+                    leaf.castShadow = true;
+                    scene.add(leaf);
+                }
+            }
+        }
+
+        function makeBar() {
+            const group = new THREE.Group();
+            group.position.set(0, 0, -20);
+            scene.add(group);
+            box(group, 0, 1.05, 0, 16, 1.8, 2.1, mats.wood);
+            box(group, 0, 2, 0.1, 16.3, 0.17, 2.35, mats.gold);
+            box(group, 0, 2.45, -0.86, 15.2, 0.7, 0.15, mats.black);
+            sign(group, 'GOLDEN HOUR  ·  COCKTAIL LOUNGE', 0, 2.48, -0.76, 10, 0.42, ['#291528', '#522252'], '#ffe0a0');
+            for (let i = -6; i <= 6; i += 2) {
+                box(group, i, 1.3, -0.92, 0.09, 1.2, 0.08, mats.gold);
+                const bottle = cylinder(group, i, 2.62, -0.88, 0.16, 0.2, 0.7 + (i % 3 === 0 ? 0.25 : 0), [mats.cyan, mats.pink, mats.warm][Math.abs(i) % 3], 12);
+                cylinder(group, i, bottle.position.y + 0.43, -0.88, 0.07, 0.1, 0.16, mats.gold, 12);
+            }
+            for (const x of [-5, -2.5, 0, 2.5, 5]) {
+                cylinder(group, x, 0.48, 1.9, 0.35, 0.4, 0.85, mats.gold, 20);
+                cylinder(group, x, 0.98, 1.9, 0.56, 0.52, 0.18, mats.velvet, 24);
+            }
+            colliders.push({ x: 0, z: -20, radius: 7.8 });
+        }
+
+        function makeSlot(x, z, index) {
+            const machine = new THREE.Group();
+            machine.position.set(x, 0, z);
+            scene.add(machine);
+            const accent = index % 2 ? mats.cyan : mats.pink;
+            box(machine, 0, 2.3, 0, 2.6, 4.6, 1.6, mats.black);
+            box(machine, 0, 4.75, 0, 2.9, 0.7, 1.9, mats.gold);
+            box(machine, 0, 4.77, 0.97, 2.52, 0.48, 0.09, mats.black);
+            sign(machine, 'LUCKY 777', 0, 4.77, 1.03, 2.38, 0.34, ['#2c113c', '#682050'], '#ffe3a3');
+            box(machine, 0, 2.95, 0.87, 2.3, 1.85, 0.15, mats.velvet);
+            box(machine, 0, 2.95, 0.97, 2.03, 1.55, 0.08, standard(0x171020, 0.2, 0.28));
+            for (let i = -1; i <= 1; i += 1) {
+                const drum = cylinder(machine, i * 0.64, 2.95, 1.03, 0.45, 0.45, 0.64, standard(0xf5e8d6, 0.1, 0.28), 24);
+                drum.rotation.x = Math.PI / 2;
+                const emoji = ['🍒', '7', '💎'][((index + i + 4) % 3)];
+                sign(machine, emoji, i * 0.64, 2.95, 1.37, 0.43, 0.43, ['#fffaf0', '#e9daf3'], '#cb4374');
+            }
+            box(machine, 0, 1.75, 0.9, 2.0, 0.65, 0.22, mats.purple);
+            const button = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.27, 0.22, 24), mats.warm);
+            button.rotation.x = Math.PI / 2;
+            button.position.set(0, 1.75, 1.08);
+            machine.add(button);
+            for (const side of [-1, 1]) {
+                box(machine, side * 1.28, 2.4, 0.78, 0.08, 3.9, 0.09, accent);
+                for (let i = 0; i < 4; i += 1) {
+                    const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.075, 12, 8), mats.warm);
+                    bulb.position.set(side * 1.28, 0.85 + i * 0.98, 0.85);
+                    machine.add(bulb);
+                }
+            }
+            box(machine, 0, 0.4, 0, 2.5, 0.8, 1.6, mats.wood);
+            colliders.push({ x, z, radius: 1.5 });
+            addStation(machine, 'slot', x, z + 1.65, `Slotgép ${index + 1}`);
+        }
+
+        function makeBlackjackTable(x, z) {
+            const group = new THREE.Group();
+            group.position.set(x, 0, z);
+            scene.add(group);
+            cylinder(group, 0, 0.75, 0, 3.05, 3.2, 0.42, mats.wood, 48);
+            cylinder(group, 0, 1.01, 0, 2.9, 2.9, 0.16, mats.felt, 48);
+            cylinder(group, 0, 0.47, 0, 1.15, 1.4, 0.55, mats.darkGold, 32);
+            const rail = new THREE.Mesh(new THREE.TorusGeometry(2.93, 0.12, 12, 56), mats.gold);
+            rail.rotation.x = Math.PI / 2;
+            rail.position.y = 1.03;
+            group.add(rail);
+            sign(group, 'BLACKJACK  ·  PAYS 3:2', 0, 1.11, 0.1, 3.4, 0.42, ['#0c4a36', '#126b49'], '#e5ffe9');
+            for (let i = -2; i <= 2; i += 1) {
+                const place = new THREE.Mesh(new THREE.TorusGeometry(0.31, 0.027, 8, 24), mats.warm);
+                place.rotation.x = Math.PI / 2;
+                place.position.set(i * 1.05, 1.12, 1.45);
+                group.add(place);
+            }
+            colliders.push({ x, z, radius: 3.5 });
+            addStation(group, 'blackjack', x, z + 3.25, 'Blackjack');
+            makeDealer(x, 1.35, z - 0.4);
+        }
+
+        function makePokerTable(x, z) {
+            const group = new THREE.Group();
+            group.position.set(x, 0, z);
+            scene.add(group);
+            const top = new THREE.Mesh(new THREE.CylinderGeometry(3.15, 3.15, 0.42, 64), mats.wood);
+            top.scale.z = 0.62;
+            top.position.y = 0.86;
+            top.castShadow = true;
+            group.add(top);
+            const felt = new THREE.Mesh(new THREE.CylinderGeometry(2.99, 2.99, 0.12, 64), standard(0x123c49, 0.08, 0.67));
+            felt.scale.z = 0.62;
+            felt.position.y = 1.12;
+            group.add(felt);
+            const rail = new THREE.Mesh(new THREE.TorusGeometry(2.98, 0.13, 12, 64));
+            rail.rotation.x = Math.PI / 2;
+            rail.scale.z = 0.62;
+            rail.position.y = 1.15;
+            rail.material = mats.gold;
+            group.add(rail);
+            sign(group, 'POKER  ·  VIDEO DRAW', 0, 1.2, 0.08, 3.5, 0.42, ['#103b48', '#165d68'], '#d0faff');
+            for (const angle of [0.5, 1.35, 2.2, 3.05, 3.9, 4.75, 5.6]) {
+                cylinder(group, Math.cos(angle) * 2.25, 1.24, Math.sin(angle) * 1.38, 0.09, 0.1, 0.035, mats.warm, 16);
+            }
+            cylinder(group, 0, 0.48, 0, 1.15, 1.4, 0.58, mats.darkGold, 32);
+            colliders.push({ x, z, radius: 3.7 });
+            addStation(group, 'poker', x, z + 3.0, 'Pókerasztal');
+        }
+
+        function makeDealer(x, y, z) {
+            const figure = new THREE.Group();
+            figure.position.set(x, y, z);
+            scene.add(figure);
+            cylinder(figure, 0, 0.7, 0, 0.37, 0.49, 1.35, standard(0xf0e3d6, 0.05, 0.7), 18);
+            cylinder(figure, 0, 1.62, 0, 0.34, 0.28, 0.28, mats.black, 20);
+            const head = new THREE.Mesh(new THREE.SphereGeometry(0.26, 20, 16), standard(0xc58d71, 0.05, 0.65));
+            head.position.y = 1.86;
+            figure.add(head);
+            const hair = new THREE.Mesh(new THREE.SphereGeometry(0.27, 20, 16, 0, Math.PI * 2, 0, Math.PI * 0.52), mats.black);
+            hair.position.y = 1.93;
+            figure.add(hair);
+        }
+
+        function addStation(parent, type, x, z, name) {
+            const target = new THREE.Mesh(
+                new THREE.BoxGeometry(2.3, 2.1, 0.35),
+                new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide })
+            );
+            target.position.set(x - parent.position.x, 1.65, z - parent.position.z);
+            target.userData.station = { type, name, x, z };
+            target.userData.worldX = x;
+            target.userData.worldZ = z;
+            parent.add(target);
+            interactionTargets.push(target);
+        }
+
+        function makeCasino() {
+            makeRoom();
+            const slotPositions = [
+                [-15, -6], [-10, -6], [-5, -6], [0, -6], [5, -6], [10, -6], [15, -6],
+                [-15, 7], [-10, 7], [-5, 7], [0, 7], [5, 7], [10, 7], [15, 7]
+            ];
+            slotPositions.forEach(([x, z], index) => makeSlot(x, z, index));
+            makeBlackjackTable(-9, -16.5);
+            makeBlackjackTable(0, -16.5);
+            makePokerTable(9, -16.5);
+            for (const [x, z] of [[-9, -10.5], [0, -10.5], [9, -10.5]]) {
+                for (const side of [-1, 1]) {
+                    const chair = new THREE.Group();
+                    chair.position.set(x + side * 3.8, 0, z + 1.2);
+                    scene.add(chair);
+                    cylinder(chair, 0, 0.55, 0, 0.43, 0.48, 0.15, mats.velvet, 20);
+                    box(chair, 0, 1.05, -0.33, 0.82, 0.95, 0.16, mats.velvet);
+                    for (const legX of [-0.28, 0.28]) {
+                        box(chair, legX, 0.25, 0, 0.08, 0.5, 0.08, mats.gold);
+                    }
+                }
+            }
+        }
+
+        makeCasino();
+
+        function resize() {
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        function showToast(text) {
+            const element = document.getElementById('toast');
+            element.textContent = text;
+            element.classList.add('show');
+            clearTimeout(toastTimer);
+            toastTimer = window.setTimeout(() => element.classList.remove('show'), 2100);
+        }
+
+        function updateBalance() {
+            document.getElementById('balance').textContent = balance.toLocaleString('hu-HU');
+            document.getElementById('freeSpins').textContent = freeSpins;
+            document.getElementById('bonusDisplay').style.display = freeSpins > 0 ? 'block' : 'none';
+        }
+
+        function requestLook(force = false) {
+            if (!(joinedLobby || force) || document.pointerLockElement === canvas) return;
+            try {
+                const result = canvas.requestPointerLock();
+                if (result?.catch) result.catch(() => { lookEnabled = false; });
+            } catch {
+                lookEnabled = false;
+            }
+        }
+
+        const nameInput = document.getElementById('playerName');
+        nameInput.value = playerName;
+        if (urlParams.get('autoJoin') === 'true') {
+            setTimeout(() => {
+                const enterBtn = document.getElementById('enterCasino');
+                if (enterBtn && !hasJoinedLobby) enterBtn.click();
+            }, 300);
+        }
+        document.getElementById('enterCasino').addEventListener('click', () => {
+            playerName = nameInput.value.replace(/[<>]/g, '').trim().slice(0, 20) || `Vendég-${Math.floor(Math.random() * 900 + 100)}`;
+            localStorage.setItem('velvetPlayerName', playerName);
+            requestLook(true);
+            socket.timeout(8000).emit('lobby:join', { id: playerId, name: playerName, channelId: casinoChannelId }, (error, response) => {
+                if (error || !response?.ok) {
+                    if (document.pointerLockElement) document.exitPointerLock();
+                    showToast(error ? 'A szerver nem válaszol. Indítsd el az Express szervert!' : response.error);
+                    return;
+                }
+                joinedLobby = true;
+                hasJoinedLobby = true;
+                player.position.x = response.x;
+                player.position.z = response.z;
+                balance = response.balance;
+                freeSpins = response.freeSpins || 0;
+                updateBalance();
+                document.getElementById('welcome').classList.add('hidden');
+            });
+        });
+        socket.on('disconnect', () => {
+            if (!joinedLobby) return;
+            joinedLobby = false;
+            showToast('Megszakadt a kapcsolat — újracsatlakozás…');
+        });
+        socket.on('connect', () => {
+            if (!hasJoinedLobby) return;
+            socket.timeout(8000).emit('lobby:join', { id: playerId, name: playerName, channelId: casinoChannelId }, (error, response) => {
+                if (error || !response?.ok) {
+                    showToast('Nem sikerült újracsatlakozni a kaszinóhoz.');
+                    return;
+                }
+                joinedLobby = true;
+                player.position.x = response.x;
+                player.position.z = response.z;
+                balance = response.balance;
+                freeSpins = response.freeSpins || 0;
+                updateBalance();
+                showToast('Visszacsatlakoztál a kaszinóhoz.');
+            });
+        });
+        document.addEventListener('pointerlockchange', () => {
+            locked = document.pointerLockElement === canvas;
+            lookEnabled = locked;
+            if (locked) dragLook = null;
+        });
+        canvas.addEventListener('click', () => {
+            if (document.getElementById('gameOverlay').classList.contains('hidden')) requestLook();
+        });
+        canvas.addEventListener('pointerdown', (event) => {
+            if (!joinedLobby || locked || !document.getElementById('gameOverlay').classList.contains('hidden')) return;
+            dragLook = { x: event.clientX, y: event.clientY };
+            canvas.setPointerCapture(event.pointerId);
+        });
+        canvas.addEventListener('pointerup', () => { dragLook = null; });
+        canvas.addEventListener('pointercancel', () => { dragLook = null; });
+        document.addEventListener('mousemove', (event) => {
+            if ((!locked && !dragLook) || !document.getElementById('gameOverlay').classList.contains('hidden')) return;
+            if (event.target instanceof Element && event.target.closest('.chat')) return;
+            const deltaX = locked ? event.movementX : event.clientX - dragLook.x;
+            const deltaY = locked ? event.movementY : event.clientY - dragLook.y;
+            if (!locked) dragLook = { x: event.clientX, y: event.clientY };
+            player.rotation.y -= deltaX * 0.0022;
+            pitch = THREE.MathUtils.clamp(pitch - deltaY * 0.0018, -1.25, 1.25);
+            camera.rotation.x = pitch;
+        });
+
+        const pressed = new Set();
+        document.addEventListener('keydown', (event) => {
+            if (event.code === 'Space' || event.code.startsWith('Arrow')) event.preventDefault();
+            pressed.add(event.code);
+            if (event.repeat) return;
+            if (event.code === 'KeyE' && activeTarget) openStation(activeTarget.userData.station.type);
+            if (event.code === 'Escape' && (locked || lookEnabled)) {
+                lookEnabled = false;
+                if (locked) document.exitPointerLock();
+            }
+        });
+        document.addEventListener('keyup', (event) => pressed.delete(event.code));
+        window.addEventListener('blur', () => pressed.clear());
+
+        function movePlayer(delta) {
+            const direction = new THREE.Vector3();
+            if (pressed.has('KeyW') || pressed.has('ArrowUp')) direction.z -= 1;
+            if (pressed.has('KeyS') || pressed.has('ArrowDown')) direction.z += 1;
+            if (pressed.has('KeyA') || pressed.has('ArrowLeft')) direction.x -= 1;
+            if (pressed.has('KeyD') || pressed.has('ArrowRight')) direction.x += 1;
+            if (direction.lengthSq() === 0) return;
+            direction.normalize().applyAxisAngle(new THREE.Vector3(0, 1, 0), player.rotation.y);
+            const speed = (pressed.has('ShiftLeft') || pressed.has('ShiftRight')) ? 8.5 : 5.3;
+            const nextX = player.position.x + direction.x * speed * delta;
+            const nextZ = player.position.z + direction.z * speed * delta;
+            const safe = (x, z) => {
+                if (Math.abs(x) > 21.2 || z < -24 || z > 23) return false;
+                for (const collider of colliders) {
+                    if (Math.hypot(x - collider.x, z - collider.z) < collider.radius + 0.6) return false;
+                }
+                return true;
+            };
+            if (safe(nextX, player.position.z)) player.position.x = nextX;
+            if (safe(player.position.x, nextZ)) player.position.z = nextZ;
+        }
+
+        const remotePlayers = new Map();
+        function makeRemotePlayer(data) {
+            const avatar = new THREE.Group();
+            const tint = Array.from(data.name).reduce((value, character) => (value * 31 + character.charCodeAt(0)) >>> 0, 7);
+            const shirt = standard(0x633399 + (tint & 0x303030), 0.28, 0.4, 0x160d26, 0.35);
+            const body = new THREE.Mesh(new THREE.CylinderGeometry(0.27, 0.36, 0.8, 12), shirt);
+            body.position.y = 0.92;
+            body.castShadow = true;
+            avatar.add(body);
+            const head = new THREE.Mesh(new THREE.SphereGeometry(0.22, 16, 12), standard(0xc88f77, 0.02, 0.7));
+            head.position.y = 1.53;
+            head.castShadow = true;
+            avatar.add(head);
+            const hair = new THREE.Mesh(new THREE.SphereGeometry(0.225, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.58), standard(0x24192a, 0.1, 0.7));
+            hair.position.y = 1.59;
+            avatar.add(hair);
+            const legs = standard(0x252336, 0.18, 0.55);
+            for (const x of [-0.14, 0.14]) {
+                const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.105, 0.12, 0.68, 10), legs);
+                leg.position.set(x, 0.33, 0);
+                leg.castShadow = true;
+                avatar.add(leg);
+            }
+            const labelCanvas = document.createElement('canvas');
+            labelCanvas.width = 512;
+            labelCanvas.height = 128;
+            const context = labelCanvas.getContext('2d');
+            context.fillStyle = 'rgba(13,9,24,.82)';
+            context.beginPath();
+            context.roundRect(5, 5, 502, 118, 28);
+            context.fill();
+            context.strokeStyle = '#ffe0a0';
+            context.lineWidth = 5;
+            context.stroke();
+            context.font = 'bold 55px "Segoe UI",sans-serif';
+            context.textAlign = 'center';
+            context.textBaseline = 'middle';
+            context.fillStyle = '#fff1cc';
+            context.fillText(data.name.slice(0, 20), 256, 65, 450);
+            const nameTexture = new THREE.CanvasTexture(labelCanvas);
+            nameTexture.colorSpace = THREE.SRGBColorSpace;
+            const nameTag = new THREE.Sprite(new THREE.SpriteMaterial({ map: nameTexture, depthWrite: false }));
+            nameTag.position.y = 2.05;
+            nameTag.scale.set(1.5, 0.38, 1);
+            avatar.add(nameTag);
+            avatar.userData.target = new THREE.Vector3(data.x, 0, data.z);
+            avatar.userData.targetYaw = data.yaw;
+            avatar.position.set(data.x, 0, data.z);
+            avatar.rotation.y = data.yaw;
+            scene.add(avatar);
+            remotePlayers.set(data.id, avatar);
+            return avatar;
+        }
+
+        function syncRemotePlayer(data) {
+            if (data.id === socket.id) return;
+            const avatar = remotePlayers.get(data.id) || makeRemotePlayer(data);
+            avatar.userData.target.set(data.x, 0, data.z);
+            avatar.userData.targetYaw = data.yaw;
+        }
+
+        function syncPlayerList(players) {
+            const activeIds = new Set();
+            for (const remote of players) {
+                if (remote.id === socket.id) continue;
+                activeIds.add(remote.id);
+                syncRemotePlayer(remote);
+            }
+            for (const [id, avatar] of remotePlayers) {
+                if (activeIds.has(id)) continue;
+                scene.remove(avatar);
+                avatar.traverse((child) => {
+                    if (child.material?.map) child.material.map.dispose();
+                    if (child.material) child.material.dispose();
+                    if (child.geometry) child.geometry.dispose();
+                });
+                remotePlayers.delete(id);
+            }
+        }
+
+        socket.on('lobby:players', syncPlayerList);
+        socket.on('player:moved', syncRemotePlayer);
+        socket.on('lobby:count', (count) => {
+            document.getElementById('onlineCount').textContent = `${count} játékos online`;
+        });
+        socket.on('wallet:balance', (wallet) => {
+            balance = wallet.balance;
+            freeSpins = wallet.freeSpins || 0;
+            updateBalance();
+        });
+        socket.on('chat:message', (message) => {
+            const log = document.getElementById('chatLog');
+            const line = document.createElement('span');
+            line.className = 'chat-line';
+            const name = document.createElement('b');
+            name.textContent = `${message.name}: `;
+            line.append(name, document.createTextNode(message.text));
+            log.append(line);
+            while (log.children.length > 6) log.firstElementChild.remove();
+            log.scrollTop = log.scrollHeight;
+        });
+        document.getElementById('chatForm').addEventListener('submit', (event) => {
+            event.preventDefault();
+            const input = document.getElementById('chatInput');
+            const text = input.value.trim();
+            if (!text || !joinedLobby) return;
+            socket.timeout(4000).emit('chat:send', text, (error, response) => {
+                if (error || !response?.ok) showToast(error ? 'A chat szerver nem válaszol.' : response.error);
+            });
+            input.value = '';
+        });
+        document.getElementById('prompt').addEventListener('click', () => {
+            if (activeTarget) openStation(activeTarget.userData.station.type);
+        });
+        function serverAction(event, payload) {
+            return new Promise((resolve, reject) => {
+                if (!socket.connected || !joinedLobby) {
+                    reject(new Error('Nincs kapcsolat a kaszinó szerverével.'));
+                    return;
+                }
+                socket.timeout(8000).emit(event, payload, (timeoutError, response) => {
+                    if (timeoutError) {
+                        reject(new Error('A szerver nem válaszolt időben.'));
+                        return;
+                    }
+                    if (!response?.ok) {
+                        reject(new Error(response?.error || 'A játék művelete sikertelen.'));
+                        return;
+                    }
+                    if (Number.isSafeInteger(response.balance)) {
+                        balance = response.balance;
+                        updateBalance();
+                    }
+                    if (Number.isSafeInteger(response.freeSpins)) freeSpins = response.freeSpins;
+                    resolve(response);
+                });
+            });
+        }
+
+        function updateTarget() {
+            raycaster.setFromCamera(center, camera);
+            const hits = raycaster.intersectObjects(interactionTargets, false);
+            const hit = hits.find((entry) => entry.distance < 5.3);
+            activeTarget = hit ? hit.object : null;
+            const prompt = document.getElementById('prompt');
+            prompt.classList.toggle('show', Boolean(activeTarget));
+            prompt.textContent = activeTarget ? `E — ${activeTarget.userData.station.name.toLocaleUpperCase('hu-HU')}` : 'E — JÁTÉK';
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const delta = Math.min(clock.getDelta(), 0.045);
+            if (joinedLobby && document.getElementById('gameOverlay').classList.contains('hidden')) movePlayer(delta);
+            for (const avatar of remotePlayers.values()) {
+                avatar.position.lerp(avatar.userData.target, 1 - Math.exp(-delta * 12));
+                const yawDelta = Math.atan2(
+                    Math.sin(avatar.userData.targetYaw - avatar.rotation.y),
+                    Math.cos(avatar.userData.targetYaw - avatar.rotation.y)
+                );
+                avatar.rotation.y += yawDelta * (1 - Math.exp(-delta * 10));
+            }
+            if (joinedLobby && performance.now() - lastNetworkPosition > 90) {
+                lastNetworkPosition = performance.now();
+                socket.volatile.emit('player:move', {
+                    x: player.position.x,
+                    z: player.position.z,
+                    yaw: player.rotation.y
+                });
+            }
+            updateTarget();
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        function openStation(type) {
+            if (isModalOpen()) return;
+            if (document.pointerLockElement) document.exitPointerLock();
+            if (type === 'slot') renderSlot();
+            if (type === 'blackjack') renderBlackjack();
+            if (type === 'poker') renderPoker();
+            document.getElementById('gameOverlay').classList.remove('hidden');
+        }
+
+        function isModalOpen() {
+            return !document.getElementById('gameOverlay').classList.contains('hidden');
+        }
+
+        function closeGame() {
+            document.getElementById('gameOverlay').classList.add('hidden');
+            document.getElementById('gamePanel').replaceChildren();
+            requestLook();
+        }
+
+        function panelHeader(kicker, title) {
+            return `<div class="panel-head"><div><div class="kicker">${kicker}</div><h2>${title}</h2></div><button class="close-button" data-close aria-label="Bezárás">×</button></div>`;
+        }
+
+        function bindClose() {
+            document.querySelector('[data-close]').addEventListener('click', closeGame);
+        }
+
+        function renderSlot() {
+            const panel = document.getElementById('gamePanel');
+            let wager = Math.max(10, Math.min(50, balance || 50));
+            let spinning = false;
+            panel.innerHTML = `${panelHeader('SLOT FLOOR · 01', 'Lucky Reels')}
+                <p class="panel-copy">Három egyforma szimbólum fizet. Három ✨ ad öt ingyenes pörgetést.</p>
+                <div class="felt"><div class="cards" id="slotCards"></div></div>
+                <p class="game-status" id="slotStatus">Később lehet a legjobb pörgetés.</p>
+                <div class="game-controls"><button class="secondary" id="slotMinus">− TÉT</button><strong id="slotBet"></strong><button class="secondary" id="slotPlus">+ TÉT</button><button class="primary" id="slotSpin">PÖRGESS</button></div>
+                <div class="modal-footer"><span>Csak virtuális kreditek</span><strong id="slotBalance"></strong></div>`;
+            bindClose();
+            const update = () => {
+                document.getElementById('slotBet').textContent = `${wager} kredit`;
+                document.getElementById('slotBalance').textContent = `${balance} kredit`;
+                document.getElementById('slotMinus').disabled = spinning || wager <= 10;
+                document.getElementById('slotPlus').disabled = spinning || wager >= 100 || (freeSpins === 0 && wager + 10 > balance);
+                document.getElementById('slotSpin').disabled = spinning || (freeSpins === 0 && balance < wager);
+            };
+            document.getElementById('slotMinus').onclick = () => { wager = Math.max(10, wager - 10); update(); };
+            document.getElementById('slotPlus').onclick = () => { wager = Math.min(100, wager + 10); update(); };
+            document.getElementById('slotSpin').onclick = () => {
+                if (spinning || (freeSpins === 0 && balance < wager)) return;
+                spinning = true;
+                update();
+                const cards = document.getElementById('slotCards');
+                const status = document.getElementById('slotStatus');
+                cards.innerHTML = '<span class="card">🎰</span><span class="card">🎰</span><span class="card">🎰</span>';
+                status.textContent = 'Pörögnek a tárcsák...';
+                serverAction('casino:slot', { bet: wager }).then((result) => {
+                    cards.innerHTML = result.result.map((face) => `<span class="card">${face}</span>`).join('');
+                    status.textContent = result.message;
+                    freeSpins = result.freeSpins;
+                }).catch((error) => {
+                    status.textContent = error.message;
+                }).finally(() => {
+                    spinning = false;
+                    update();
+                });
+            };
+            update();
+        }
+
+        function cardMarkup(card, hidden = false, held = false) {
+            if (hidden) return '<div class="card back">✦</div>';
+            const red = card.suit === '♥' || card.suit === '♦' ? ' red' : '';
+            return `<div class="card${red}${held ? ' held' : ''}"><span>${card.rank}<br>${card.suit}</span></div>`;
+        }
+
+        function handValue(hand) {
+            let total = hand.reduce((sum, card) => sum + (
+                card.rank === 'A' ? 11 :
+                    ['J', 'Q', 'K'].includes(card.rank) ? 10 : Number(card.rank)
+            ), 0);
+            let aces = hand.filter((card) => card.rank === 'A').length;
+            while (total > 21 && aces > 0) {
+                total -= 10;
+                aces -= 1;
+            }
+            return total;
+        }
+
+        function renderBlackjack() {
+            const panel = document.getElementById('gamePanel');
+            panel.innerHTML = `${panelHeader('TABLE 21 · DEALER STANDS ON 17', 'Blackjack')}
+                <p class="panel-copy">Közelíts a 21-hez, de ne menj fölé. A blackjack 3:2-t fizet.</p>
+                <div class="game-controls"><button class="secondary" id="bjMinus">− TÉT</button><strong id="bjBet"></strong><button class="secondary" id="bjPlus">+ TÉT</button><button class="primary" id="bjDeal">OSZTÁS</button></div>
+                <div class="felt" style="margin-top:14px"><div class="hand-label">Osztó</div><div class="cards" id="dealerCards"></div><div class="hand-label">Te · <span id="playerTotal">0</span></div><div class="cards" id="playerCards"></div></div>
+                <p class="game-status" id="bjStatus">Tegyél, majd kérj lapot vagy állj meg.</p>
+                <div class="game-controls"><button class="secondary" id="bjHit" disabled>LAPOT KÉREK</button><button class="secondary" id="bjStand" disabled>MEGÁLLOK</button></div>
+                <div class="modal-footer"><span>Virtuális egyenleg</span><strong id="bjBalance"></strong></div>`;
+            bindClose();
+            let wager = Math.max(10, Math.min(50, balance || 50));
+            let playerHand = [];
+            let dealerHand = [];
+            let inRound = false;
+            let busy = false;
+            const update = () => {
+                document.getElementById('bjBet').textContent = `${wager} kredit`;
+                document.getElementById('bjBalance').textContent = `${balance} kredit`;
+                document.getElementById('bjMinus').disabled = inRound || busy || wager <= 10;
+                document.getElementById('bjPlus').disabled = inRound || busy || wager >= 100 || wager + 10 > balance;
+                document.getElementById('bjDeal').disabled = inRound || busy || balance < wager || wager <= 0;
+                document.getElementById('bjHit').disabled = !inRound || busy;
+                document.getElementById('bjStand').disabled = !inRound || busy;
+                document.getElementById('dealerCards').innerHTML = dealerHand.map((card) => cardMarkup(card, card === null)).join('');
+                document.getElementById('playerCards').innerHTML = playerHand.map((card) => cardMarkup(card)).join('');
+                document.getElementById('playerTotal').textContent = playerHand.length ? handValue(playerHand) : '0';
+            };
+            document.getElementById('bjMinus').onclick = () => { wager = Math.max(10, wager - 10); update(); };
+            document.getElementById('bjPlus').onclick = () => { wager = Math.min(100, balance, wager + 10); update(); };
+            const renderResponse = (result) => {
+                playerHand = result.player;
+                dealerHand = result.dealer;
+                inRound = result.active;
+                if (!result.active) {
+                    const messages = {
+                        win: `Nyertél! +${result.payout} kredit.`,
+                        blackjack: `BLACKJACK! +${result.payout} kredit.`,
+                        push: `Döntetlen — a tét visszajár (${result.payout}).`,
+                        lose: `Az osztó nyert. −${wager} kredit.`
+                    };
+                    document.getElementById('bjStatus').textContent = messages[result.outcome] || 'A leosztás véget ért.';
+                } else document.getElementById('bjStatus').textContent = 'A te köröd. Lapot kérsz vagy megállsz?';
+                update();
+            };
+            document.getElementById('bjDeal').onclick = () => {
+                if (inRound || balance < wager || wager <= 0) return;
+                busy = true;
+                update();
+                serverAction('blackjack:start', { bet: wager }).then(renderResponse).catch((error) => {
+                    document.getElementById('bjStatus').textContent = error.message;
+                }).finally(() => { busy = false; update(); });
+            };
+            document.getElementById('bjHit').onclick = () => {
+                if (!inRound || busy) return;
+                busy = true;
+                update();
+                serverAction('blackjack:hit', {}).then(renderResponse).catch((error) => {
+                    document.getElementById('bjStatus').textContent = error.message;
+                }).finally(() => { busy = false; update(); });
+            };
+            document.getElementById('bjStand').onclick = () => {
+                if (!inRound || busy) return;
+                busy = true;
+                update();
+                serverAction('blackjack:stand', {}).then(renderResponse).catch((error) => {
+                    document.getElementById('bjStatus').textContent = error.message;
+                }).finally(() => { busy = false; update(); });
+            };
+            update();
+        }
+
+        const pokerPayouts = {
+            royal: ['Royal flush', 250],
+            straightFlush: ['Színsor', 50],
+            four: ['Póker', 25],
+            fullHouse: ['Full house', 9],
+            flush: ['Szín', 6],
+            straight: ['Sor', 4],
+            three: ['Drill', 3],
+            twoPair: ['Két pár', 2],
+            jacks: ['Jacks or better', 1],
+            pair: ['Pár (nem fizet)', 0],
+            nothing: ['Nincs nyeremény', 0]
+        };
+
+        function renderPoker() {
+            const panel = document.getElementById('gamePanel');
+            panel.innerHTML = `${panelHeader('VIDEO POKER · JACKS OR BETTER', 'Draw Poker')}
+                <p class="panel-copy">Válassz tétet, osztás után kattints a megtartani kívánt lapokra, majd húzz újakat.</p>
+                <div class="poker-table"><div class="poker-cards" id="pokerCards"></div></div>
+                <p class="game-status" id="pokerStatus">Öt lap vár rád — sok szerencsét!</p>
+                <div class="game-controls"><button class="secondary" id="pokerMinus">− TÉT</button><strong id="pokerBet"></strong><button class="secondary" id="pokerPlus">+ TÉT</button><button class="primary" id="pokerDeal">OSZTÁS</button><button class="primary" id="pokerDraw" hidden>HÚZÁS</button></div>
+                <div class="paytable">${Object.values(pokerPayouts).filter((entry) => entry[1] > 0).map((entry) => `<span>${entry[0]}</span><b>×${entry[1]}</b>`).join('')}</div>
+                <div class="modal-footer"><span>Virtuális egyenleg</span><strong id="pokerBalance"></strong></div>`;
+            bindClose();
+            let wager = Math.max(10, Math.min(20, balance || 20));
+            let hand = [];
+            let held = new Set();
+            let busy = false;
+            let roundActive = false;
+            const update = () => {
+                document.getElementById('pokerBet').textContent = `${wager} kredit`;
+                document.getElementById('pokerBalance').textContent = `${balance} kredit`;
+                document.getElementById('pokerMinus').disabled = roundActive || busy || wager <= 10;
+                document.getElementById('pokerPlus').disabled = roundActive || busy || wager >= 100 || wager + 10 > balance;
+                document.getElementById('pokerDeal').disabled = roundActive || busy || balance < wager || wager <= 0;
+                document.getElementById('pokerDraw').hidden = !roundActive;
+                document.getElementById('pokerDraw').disabled = busy;
+                document.getElementById('pokerCards').innerHTML = hand.map((card, i) =>
+                    `<div class="card${card.suit === '♥' || card.suit === '♦' ? ' red' : ''}${held.has(i) ? ' held' : ''}" data-card="${i}"><span>${card.rank}<br>${card.suit}</span></div>`
+                ).join('');
+                document.querySelectorAll('[data-card]').forEach((element) => {
+                    element.onclick = () => {
+                        if (!roundActive) return;
+                        const index = Number(element.dataset.card);
+                        if (held.has(index)) held.delete(index);
+                        else held.add(index);
+                        update();
+                    };
+                });
+            };
+            document.getElementById('pokerMinus').onclick = () => { wager = Math.max(10, wager - 10); update(); };
+            document.getElementById('pokerPlus').onclick = () => { wager = Math.min(100, balance, wager + 10); update(); };
+            document.getElementById('pokerDeal').onclick = () => {
+                if (roundActive || balance < wager || wager <= 0) return;
+                busy = true;
+                update();
+                serverAction('poker:deal', { bet: wager }).then((result) => {
+                    hand = result.hand;
+                    held = new Set();
+                    roundActive = true;
+                    document.getElementById('pokerStatus').textContent = 'Kattints a megtartani kívánt lapokra, aztán húzz.';
+                }).catch((error) => {
+                    document.getElementById('pokerStatus').textContent = error.message;
+                }).finally(() => {
+                    busy = false;
+                    update();
+                });
+            };
+            document.getElementById('pokerDraw').onclick = () => {
+                if (!roundActive || busy) return;
+                busy = true;
+                update();
+                serverAction('poker:draw', { held: [...held] }).then((result) => {
+                    hand = result.hand;
+                    roundActive = false;
+                    const name = pokerPayouts[result.category]?.[0] || 'Leosztás';
+                    document.getElementById('pokerStatus').textContent = result.winnings > 0 ?
+                        `${name}! +${result.winnings} kredit.` : `${name}. Ezúttal nem nyertél.`;
+                }).catch((error) => {
+                    document.getElementById('pokerStatus').textContent = error.message;
+                }).finally(() => {
+                    busy = false;
+                    update();
+                });
+            };
+            update();
+        }
+
+        document.getElementById('gameOverlay').addEventListener('click', (event) => {
+            if (event.target === event.currentTarget) closeGame();
+        });
+    </script>
+</body>
+</html>
