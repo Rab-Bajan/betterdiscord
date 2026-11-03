@@ -1,0 +1,42 @@
+{
+  "acc_1793741538950_p4u12m::acc_1793741538956_mbrkxd": [
+    {
+      "id": "dm_1793741539572_gja80hrq3",
+      "dmKey": "acc_1793741538950_p4u12m::acc_1793741538956_mbrkxd",
+      "senderId": "_yFN7WCcWrd5_fdCAAAC",
+      "senderAccountId": "acc_1793741538950_p4u12m",
+      "senderUsername": "User_1793741538842_Pro",
+      "senderAvatarColor": "#536CFF",
+      "senderAvatarUrl": "https://example.com/avatar.png",
+      "recipientId": "GhGrbWJDECKcB36TAAAD",
+      "recipientUsername": "User2_1793741538842",
+      "recipientAvatarColor": "#28C997",
+      "recipientAvatarUrl": null,
+      "text": "Szia, ez egy titkos privát üzenet!",
+      "attachments": [],
+      "timestamp": "22:32",
+      "createdAt": 1793741539572,
+      "isPrivate": true
+    }
+  ],
+  "asd::asdasdasd": [
+    {
+      "id": "dm_1793741564450_e4c1cwvj4",
+      "dmKey": "asd::asdasdasd",
+      "senderId": "x1MobFNoGr_yS7KrAAAA",
+      "senderAccountId": null,
+      "senderUsername": "asdasdasd",
+      "senderAvatarColor": "#7655F5",
+      "senderAvatarUrl": null,
+      "recipientId": "9FMfftIuHICPVaIlAAAB",
+      "recipientUsername": "asd",
+      "recipientAvatarColor": "#7655F5",
+      "recipientAvatarUrl": null,
+      "text": "ékljhgf",
+      "attachments": [],
+      "timestamp": "22:32",
+      "createdAt": 1793741564450,
+      "isPrivate": true
+    }
+  ]
+}

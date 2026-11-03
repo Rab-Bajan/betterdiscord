@@ -1,0 +1,20 @@
+[
+  {
+    "id": "acc_1793741538950_p4u12m",
+    "username": "User_1793741538842_Pro",
+    "passwordHash": "f2fe79efaac1b62fd32458d6a7eb412a40bc0100bb8b63357561417d3eb0576474923f35f7c551f3415d6d496e289c8e31605d52109ecb99110483e976f1fa21",
+    "salt": "25362f423081cb215dce495a0a1c7a2a",
+    "avatarColor": "#536CFF",
+    "avatarUrl": "https://example.com/avatar.png",
+    "createdAt": 1793741538950
+  },
+  {
+    "id": "acc_1793741538956_mbrkxd",
+    "username": "User2_1793741538842",
+    "passwordHash": "5c1d625f0f625ce9fc457f0e3aa65365334ef2a0b9cd18818ff738fd1c2ba1082d0ab86f74397745e397ac787b01a7111617f6e0fef349e4b9b0f9031a53a508",
+    "salt": "4d08692bc79b465d55a9b48e69904dcd",
+    "avatarColor": "#28C997",
+    "avatarUrl": null,
+    "createdAt": 1793741538956
+  }
+]

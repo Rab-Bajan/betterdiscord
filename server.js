@@ -63,6 +63,16 @@ const users = new Map(); // socket.id -> { id, username, avatarColor, voiceChann
 const setupWatchParty = require('./watchPartyHandler');
 const watchPartyManager = setupWatchParty(io, app, users);
 
+// SharkVoic 1v1 Sakk és Spectator játékmód inicializálása
+const setupChess = require('./chessHandler');
+const chessManager = setupChess(io, app, users);
+
+// SQLite Adatbázis, Authentikáció és Privát Üzenetek (DM)
+const database = require('./database');
+const authManager = require('./authManager');
+const setupDm = require('./dmHandler');
+const dmManager = setupDm(io, users);
+
 const textChannels = [
   { id: 'altalanos', name: 'általános', description: 'Általános beszélgetés minden témáról' },
   { id: 'gaming', name: 'gaming', description: 'Játék megbeszélések, mémek és stratégiák' },
@@ -203,23 +213,23 @@ function updateFileContent(root, fileId, content) {
   return false;
 }
 
-// In-memory message store per channel (last 100 messages)
-const channelMessages = {
-  'altalanos': [
+// SQLite-ból betöltött csatorna üzenetek
+const defaultChannelIds = ['altalanos', 'gaming', 'zene', 'fejlesztes'];
+const channelMessages = database.loadAllChannelMessages(defaultChannelIds);
+
+if (!channelMessages['altalanos'] || channelMessages['altalanos'].length === 0) {
+  channelMessages['altalanos'] = [
     {
       id: 'welcome-1',
       senderId: 'system',
       username: 'Rendszer Bot',
-      avatarColor: '#5865F2',
-      text: 'Üdvözlünk a biztonságos HTTPS Discord VoIP & Csevegő szerveren! 🔒🎉 Válassz egy hangcsatornát a beszélgetéshez.',
+      avatarColor: '#7655F5',
+      text: 'Üdvözlünk a SharkVoic prémium kommunikációs szerveren! 🔒🎉 Válassz egy hangcsatornát vagy csevegj a szobákban.',
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       isSystem: true
     }
-  ],
-  'gaming': [],
-  'zene': [],
-  'fejlesztes': []
-};
+  ];
+}
 
 // API endpoint for health check
 app.get('/api/status', (req, res) => {
@@ -373,8 +383,10 @@ function getVoiceChannelState() {
 function getOnlineUsersList() {
   return Array.from(users.values()).map(u => ({
     id: u.id,
+    accountId: u.accountId || null,
     username: u.username,
     avatarColor: u.avatarColor,
+    avatarUrl: u.avatarUrl || null,
     voiceChannel: u.voiceChannel,
     isMuted: u.isMuted,
     isDeafened: u.isDeafened,
@@ -386,15 +398,14 @@ function getOnlineUsersList() {
 io.on('connection', (socket) => {
   console.log(`[Socket HTTPS] Csatlakozott kliens: ${socket.id}`);
 
-  // 1. Felhasználó belépése
-  socket.on('user:join', ({ username, avatarColor }) => {
-    const cleanUsername = (username || `Felhasználó_${socket.id.substring(0, 4)}`).trim();
-    const color = avatarColor || '#5865F2';
-
+  // Helper a felhasználó session beállításához
+  function establishUserSession(data) {
     const userObj = {
       id: socket.id,
-      username: cleanUsername,
-      avatarColor: color,
+      accountId: data.accountId || null,
+      username: data.username,
+      avatarColor: data.avatarColor || '#7655F5',
+      avatarUrl: data.avatarUrl || null,
       voiceChannel: null,
       isMuted: false,
       isDeafened: false,
@@ -414,14 +425,108 @@ io.on('connection', (socket) => {
       voiceStates: getVoiceChannelState(),
       onlineUsers: getOnlineUsersList(),
       casinoSessions: casinoManager.getCasinoSessions(),
-      watchSessions: watchPartyManager.getWatchSessions()
+      watchSessions: watchPartyManager.getWatchSessions(),
+      chessSessions: chessManager.getChessSessions()
     });
 
     // Értesítés a többieknek
     io.emit('users:updated', getOnlineUsersList());
     io.emit('voice:states-updated', getVoiceChannelState());
 
-    console.log(`[User] Belépett: ${cleanUsername} (${socket.id})`);
+    console.log(`[User] Belépett: ${userObj.username} (${socket.id})`);
+    return userObj;
+  }
+
+  // 1A. Regisztráció
+  socket.on('auth:register', ({ username, password, avatarColor, avatarUrl }) => {
+    const res = authManager.register({ username, password, avatarColor, avatarUrl });
+    if (!res.success) {
+      socket.emit('auth:error', { error: res.error });
+      return;
+    }
+    const sessionUser = establishUserSession({
+      accountId: res.user.id,
+      username: res.user.username,
+      avatarColor: res.user.avatarColor,
+      avatarUrl: res.user.avatarUrl
+    });
+    socket.emit('auth:success', { user: sessionUser, token: res.token });
+  });
+
+  // 1B. Bejelentkezés
+  socket.on('auth:login', ({ username, password }) => {
+    const res = authManager.login({ username, password });
+    if (!res.success) {
+      socket.emit('auth:error', { error: res.error });
+      return;
+    }
+    const sessionUser = establishUserSession({
+      accountId: res.user.id,
+      username: res.user.username,
+      avatarColor: res.user.avatarColor,
+      avatarUrl: res.user.avatarUrl
+    });
+    socket.emit('auth:success', { user: sessionUser, token: res.token });
+  });
+
+  // 1B2. Automatikus munkamenet hitelesítés Tokennel
+  socket.on('auth:verify-token', ({ token }) => {
+    const res = authManager.verifyToken(token);
+    if (!res.success) {
+      socket.emit('auth:token-invalid', { error: res.error });
+      return;
+    }
+    const sessionUser = establishUserSession({
+      accountId: res.user.id,
+      username: res.user.username,
+      avatarColor: res.user.avatarColor,
+      avatarUrl: res.user.avatarUrl
+    });
+    socket.emit('auth:success', { user: sessionUser, token: res.token });
+  });
+
+  // 1B3. Kijelentkezés
+  socket.on('auth:logout', ({ token }) => {
+    authManager.logout(token);
+    const user = users.get(socket.id);
+    if (user) {
+      users.delete(socket.id);
+      io.emit('users:updated', getOnlineUsersList());
+      io.emit('voice:states-updated', getVoiceChannelState());
+    }
+  });
+
+  // 1C. Vendég belépés (Visszafelé kompatibilitás)
+  socket.on('user:join', ({ username, avatarColor, avatarUrl, accountId }) => {
+    const cleanUsername = (username || `Felhasználó_${socket.id.substring(0, 4)}`).trim();
+    const color = avatarColor || '#7655F5';
+    establishUserSession({
+      accountId: accountId || null,
+      username: cleanUsername,
+      avatarColor: color,
+      avatarUrl: avatarUrl || null
+    });
+  });
+
+  // 1D. Profil szerkesztése (Név, Szín, Profilkép)
+  socket.on('user:update-profile', ({ username, avatarColor, avatarUrl }) => {
+    const user = users.get(socket.id);
+    if (!user) return;
+
+    const res = authManager.updateProfile(user.accountId, { username, avatarColor, avatarUrl });
+    if (!res.success) {
+      socket.emit('profile:error', { error: res.error });
+      return;
+    }
+
+    user.username = res.user.username;
+    user.avatarColor = res.user.avatarColor;
+    user.avatarUrl = res.user.avatarUrl;
+
+    socket.emit('user:profile-updated', user);
+    io.emit('users:updated', getOnlineUsersList());
+    io.emit('voice:states-updated', getVoiceChannelState());
+    console.log(`[User] Profil módosítva: ${user.username} (${socket.id})`);
   });
 
   // 2. Szöveges vagy fájl csatolmányos üzenet küldése
@@ -441,11 +546,15 @@ io.on('connection', (socket) => {
       senderId: user.id,
       username: user.username,
       avatarColor: user.avatarColor,
+      avatarUrl: user.avatarUrl || null,
       text: cleanText,
       attachments: validAttachments,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       channelId
     };
+
+    // Mentés SQLite adatbázisba
+    database.saveChannelMessage(newMsg);
 
     channelMessages[channelId].push(newMsg);
     if (channelMessages[channelId].length > 150) {
