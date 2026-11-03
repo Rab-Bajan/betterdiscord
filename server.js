@@ -531,7 +531,13 @@ io.on('connection', (socket) => {
   // 5. WebRTC Szignál továbbítás (Offer / Answer / ICE Candidate)
   socket.on('webrtc:signal', ({ targetPeerId, signal }) => {
     const sender = users.get(socket.id);
-    if (!sender) return;
+    if (!sender || !targetPeerId || !signal) return;
+
+    const targetUser = users.get(targetPeerId);
+    if (!targetUser) {
+      console.warn(`[WebRTC Relay] Célpont nem található: ${targetPeerId} (feladó: ${sender.username})`);
+      return;
+    }
 
     io.to(targetPeerId).emit('webrtc:signal', {
       senderPeerId: socket.id,
