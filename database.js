@@ -65,6 +65,53 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_dm_key_created ON direct_messages(dm_key, created_at);
 `);
 
+// Admin által eltávolított üzenetek jelölése (az üzenet helyén látható marad a jelzés)
+if (!db.prepare('PRAGMA table_info(direct_messages)').all().some((c) => c.name === 'removed_by_admin')) {
+  db.exec('ALTER TABLE direct_messages ADD COLUMN removed_by_admin INTEGER DEFAULT 0');
+}
+
+// Hívás-események a DM-ben (rendszerüzenetként): JSON { callId, status, durationSec, callerUsername }
+if (!db.prepare('PRAGMA table_info(direct_messages)').all().some((c) => c.name === 'call_event')) {
+  db.exec('ALTER TABLE direct_messages ADD COLUMN call_event TEXT');
+}
+
+// Hanghívások naplója (csak metaadat, hang soha nem kerül tárolásra)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS calls (
+    id TEXT PRIMARY KEY,
+    dm_key TEXT NOT NULL,
+    caller_account_id TEXT NOT NULL,
+    caller_username TEXT NOT NULL,
+    callee_account_id TEXT NOT NULL,
+    callee_username TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    answered_at INTEGER,
+    ended_at INTEGER,
+    duration_sec INTEGER DEFAULT 0,
+    end_reason TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_calls_dm ON calls(dm_key, created_at);
+`);
+
+// DM jelentések: egy résztvevő jelent egy üzenetet; az admin csak ezekhez a beszélgetésekhez fér hozzá
+db.exec(`
+  CREATE TABLE IF NOT EXISTS dm_reports (
+    id TEXT PRIMARY KEY,
+    message_id TEXT NOT NULL,
+    dm_key TEXT NOT NULL,
+    reporter_username TEXT NOT NULL,
+    reason TEXT,
+    status TEXT NOT NULL DEFAULT 'open',
+    created_at INTEGER,
+    resolved_by TEXT,
+    resolved_at INTEGER,
+    resolution TEXT,
+    UNIQUE (message_id, reporter_username)
+  );
+  CREATE INDEX IF NOT EXISTS idx_dm_reports_status ON dm_reports(status, created_at);
+`);
+
 // 4. Munkamenet Tokenek (Auth Tokens) tábla az automatikus bejelentkezéshez
 db.exec(`
   CREATE TABLE IF NOT EXISTS auth_tokens (
@@ -134,11 +181,11 @@ const insertDmMessageStmt = db.prepare(`
   INSERT INTO direct_messages (
     id, dm_key, sender_id, sender_account_id, sender_username, sender_avatar_color, sender_avatar_url,
     recipient_id, recipient_username, recipient_avatar_color, recipient_avatar_url,
-    text, attachments, timestamp, created_at
+    text, attachments, timestamp, created_at, call_event
   ) VALUES (
     @id, @dm_key, @sender_id, @sender_account_id, @sender_username, @sender_avatar_color, @sender_avatar_url,
     @recipient_id, @recipient_username, @recipient_avatar_color, @recipient_avatar_url,
-    @text, @attachments, @timestamp, @created_at
+    @text, @attachments, @timestamp, @created_at, @call_event
   )
 `);
 
@@ -193,6 +240,8 @@ function formatDmRow(row) {
     attachments: row.attachments ? JSON.parse(row.attachments) : [],
     timestamp: row.timestamp,
     createdAt: row.created_at,
+    removedByAdmin: !!row.removed_by_admin,
+    callEvent: row.call_event ? (typeof row.call_event === 'string' ? JSON.parse(row.call_event) : row.call_event) : null,
     isPrivate: true
   };
 }
@@ -300,10 +349,12 @@ module.exports = {
       text: msg.text || '',
       attachments: JSON.stringify(msg.attachments || []),
       timestamp: msg.timestamp,
-      created_at: msg.createdAt || Date.now()
+      created_at: msg.createdAt || Date.now(),
+      call_event: msg.callEvent ? JSON.stringify(msg.callEvent) : null
     });
     return formatDmRow({
       ...msg,
+      call_event: msg.callEvent ? JSON.stringify(msg.callEvent) : null,
       dm_key: msg.dmKey,
       sender_username: msg.senderUsername,
       sender_avatar_color: msg.senderAvatarColor,
@@ -314,6 +365,48 @@ module.exports = {
       attachments: JSON.stringify(msg.attachments || []),
       created_at: msg.createdAt
     });
+  },
+
+  getDmMessageById(id) {
+    return formatDmRow(db.prepare('SELECT * FROM direct_messages WHERE id = ?').get(id));
+  },
+
+  // A beszélgetés `before` db üzenete a megadott időpont előtt/ott és `after` db utána (a jelentés környezete)
+  getDmContext(dmKey, createdAt, before = 10, after = 10) {
+    const older = db.prepare(
+      'SELECT * FROM direct_messages WHERE dm_key = ? AND created_at <= ? ORDER BY created_at DESC LIMIT ?'
+    ).all(dmKey, createdAt, before + 1).reverse();
+    const newer = db.prepare(
+      'SELECT * FROM direct_messages WHERE dm_key = ? AND created_at > ? ORDER BY created_at ASC LIMIT ?'
+    ).all(dmKey, createdAt, after);
+    return [...older, ...newer].map(formatDmRow);
+  },
+
+  // Üzenet tartalmának eltávolítása; a sor megmarad, a kliens jelzést mutat helyette
+  removeDmMessage(id) {
+    return db.prepare("UPDATE direct_messages SET text = '', attachments = '[]', removed_by_admin = 1 WHERE id = ?").run(id).changes > 0;
+  },
+
+  createDmReport({ id, messageId, dmKey, reporterUsername, reason }) {
+    const result = db.prepare(`
+      INSERT OR IGNORE INTO dm_reports (id, message_id, dm_key, reporter_username, reason, status, created_at)
+      VALUES (?, ?, ?, ?, ?, 'open', ?)
+    `).run(id, messageId, dmKey, reporterUsername, reason || '', Date.now());
+    return result.changes > 0; // false: ugyanezt az üzenetet már jelentette
+  },
+
+  getDmReport(id) {
+    return db.prepare('SELECT * FROM dm_reports WHERE id = ?').get(id) || null;
+  },
+
+  listDmReports(status = 'open') {
+    return db.prepare('SELECT * FROM dm_reports WHERE status = ? ORDER BY created_at DESC LIMIT 100').all(status);
+  },
+
+  resolveDmReport(id, adminUsername, resolution) {
+    return db.prepare(
+      "UPDATE dm_reports SET status = 'resolved', resolved_by = ?, resolved_at = ?, resolution = ? WHERE id = ? AND status = 'open'"
+    ).run(adminUsername, Date.now(), resolution || '', id).changes > 0;
   },
 
   getDmMessages(dmKey) {
@@ -339,12 +432,33 @@ module.exports = {
           username: partnerName,
           avatarColor: partnerColor || '#7655F5',
           avatarUrl: partnerUrl || null,
-          lastMessage: r.text || 'Fájl csatolmány',
+          lastMessage: r.call_event ? 'Hanghívás' : (r.text || 'Fájl csatolmány'),
           lastTimestamp: r.timestamp
         });
       }
     }
     return Array.from(partnersMap.values());
+  },
+
+  // Hívásnapló
+  saveCall(c) {
+    db.prepare(`
+      INSERT OR REPLACE INTO calls (id, dm_key, caller_account_id, caller_username, callee_account_id, callee_username,
+        status, created_at, answered_at, ended_at, duration_sec, end_reason)
+      VALUES (@id, @dmKey, @callerAccountId, @callerUsername, @calleeAccountId, @calleeUsername,
+        @status, @createdAt, @answeredAt, @endedAt, @durationSec, @endReason)
+    `).run({ answeredAt: null, endedAt: null, durationSec: 0, endReason: null, ...c });
+  },
+
+  getCallHistory(dmKey, limit = 50) {
+    return db.prepare('SELECT * FROM calls WHERE dm_key = ? ORDER BY created_at DESC LIMIT ?').all(dmKey, limit).map((r) => ({
+      id: r.id,
+      callerUsername: r.caller_username,
+      calleeUsername: r.callee_username,
+      status: r.status,
+      createdAt: r.created_at,
+      durationSec: r.duration_sec || 0
+    }));
   },
 
   // Token műveletek

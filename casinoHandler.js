@@ -52,6 +52,39 @@ module.exports = function setupCasino(io, app, casinoDir) {
     return account;
   }
 
+  // Admin: a következő pörgetések eredményének előre megadása. rig = { mode, symbols?, spins }
+  const symbolEmojis = slotSymbols.map((s) => s.emoji);
+
+  function takeRiggedResult(account) {
+    const rig = account.rig;
+    if (!rig || rig.spins <= 0) return null;
+    rig.spins -= 1;
+    if (rig.spins <= 0) account.rig = null;
+
+    switch (rig.mode) {
+      case 'jackpot': return Array(3).fill(rig.symbols?.[0] || '⭐');
+      case 'bonus': return ['✨', '✨', '✨'];
+      case 'lose': return ['🍒', '🍋', '🍇'];
+      case 'symbols': return rig.symbols;
+      default: return null;
+    }
+  }
+
+  function normalizeRig(rig) {
+    if (!rig) return null;
+    const spins = Math.min(Math.max(Number(rig.spins) || 1, 1), 1000);
+    const valid = (e) => symbolEmojis.includes(e);
+    if (rig.mode === 'jackpot') {
+      const symbol = valid(rig.symbols?.[0]) && rig.symbols[0] !== '✨' ? rig.symbols[0] : '⭐';
+      return { mode: 'jackpot', symbols: [symbol], spins };
+    }
+    if (rig.mode === 'bonus' || rig.mode === 'lose') return { mode: rig.mode, spins };
+    if (rig.mode === 'symbols' && Array.isArray(rig.symbols) && rig.symbols.length === 3 && rig.symbols.every(valid)) {
+      return { mode: 'symbols', symbols: rig.symbols, spins };
+    }
+    throw fail('Érvénytelen pörgetés-beállítás.');
+  }
+
   function isValidBet(bet, account) {
     return Number.isSafeInteger(bet) && bet >= 10 && bet <= 100 && bet % 10 === 0 && bet <= account.balance;
   }
@@ -292,8 +325,9 @@ module.exports = function setupCasino(io, app, casinoDir) {
       if (freeSpin) account.freeSpins -= 1;
       else account.balance -= bet;
 
+      const forced = takeRiggedResult(account);
       let selection;
-      const result = Array.from({ length: 3 }, () => {
+      const result = forced || Array.from({ length: 3 }, () => {
         selection = crypto.randomInt(100);
         for (const symbol of slotSymbols) {
           selection -= symbol.weight;
@@ -415,7 +449,50 @@ module.exports = function setupCasino(io, app, casinoDir) {
     });
   });
 
+  // Admin API: csak az adminHandler hívja, a jogosultságot ott ellenőrizzük
+  const admin = {
+    listAccounts() {
+      const online = new Map();
+      for (const p of onlinePlayers.values()) online.set(p.accountId, p);
+      return [...accounts.entries()].map(([playerId, a]) => ({
+        playerId,
+        name: online.get(playerId)?.name || null,
+        online: online.has(playerId),
+        balance: a.balance,
+        freeSpins: a.freeSpins,
+        rig: a.rig || null
+      }));
+    },
+
+    setBalance(playerId, balance, freeSpins) {
+      const account = accounts.get(playerId);
+      if (!account) throw fail('Ismeretlen játékos.');
+      const valid = (n) => Number.isSafeInteger(n) && n >= 0 && n <= 1_000_000_000;
+      if (balance !== undefined) {
+        if (!valid(balance)) throw fail('Érvénytelen egyenleg.');
+        account.balance = balance;
+      }
+      if (freeSpins !== undefined) {
+        if (!valid(freeSpins)) throw fail('Érvénytelen ingyenes pörgetésszám.');
+        account.freeSpins = freeSpins;
+      }
+      // Az érintett játékos azonnal látja az új egyenlegét
+      for (const [socketId, p] of onlinePlayers.entries()) {
+        if (p.accountId === playerId) io.to(socketId).emit('wallet:balance', { balance: account.balance, freeSpins: account.freeSpins });
+      }
+      return { balance: account.balance, freeSpins: account.freeSpins };
+    },
+
+    setRig(playerId, rig) {
+      const account = accounts.get(playerId);
+      if (!account) throw fail('Ismeretlen játékos.');
+      account.rig = normalizeRig(rig);
+      return { rig: account.rig };
+    }
+  };
+
   return {
-    getCasinoSessions: () => Object.fromEntries(casinoSessions)
+    getCasinoSessions: () => Object.fromEntries(casinoSessions),
+    admin
   };
 };

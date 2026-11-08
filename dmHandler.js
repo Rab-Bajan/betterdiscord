@@ -26,7 +26,44 @@ module.exports = function setupDm(io, users) {
     return null;
   }
 
+  // Mindkét résztvevőnek elküldi, hogy egy üzenetet az admin eltávolított (az üzenet helyén jelzés látszik)
+  function notifyMessageRemoved(dmKey, messageId) {
+    const names = dmKey.split('::');
+    for (const [socketId, u] of users.entries()) {
+      if (names.includes(u.username.toLowerCase())) {
+        io.to(socketId).emit('dm:message-removed', { id: messageId, dmKey });
+      }
+    }
+  }
+
   io.on('connection', (socket) => {
+    // 0. Üzenet jelentése: csak a beszélgetés résztvevője jelentheti a másik fél üzenetét
+    socket.on('dm:report-message', ({ messageId, reason } = {}, ack) => {
+      const reply = typeof ack === 'function' ? ack : () => {};
+      const me = users.get(socket.id);
+      const msg = typeof messageId === 'string' ? db.getDmMessageById(messageId) : null;
+      if (!me || !msg) return reply({ ok: false, error: 'Az üzenet nem található.' });
+
+      const myName = me.username.toLowerCase();
+      const isParticipant = msg.dmKey.split('::').includes(myName);
+      if (!isParticipant || msg.senderUsername.toLowerCase() === myName) {
+        return reply({ ok: false, error: 'Csak a beszélgetőpartnered üzenetét jelentheted.' });
+      }
+      if (msg.removedByAdmin) return reply({ ok: false, error: 'Ezt az üzenetet már eltávolították.' });
+
+      const created = db.createDmReport({
+        id: `rep_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
+        messageId: msg.id,
+        dmKey: msg.dmKey,
+        reporterUsername: me.username,
+        reason: String(reason || '').trim().slice(0, 300)
+      });
+      if (!created) return reply({ ok: false, error: 'Ezt az üzenetet már jelentetted.' });
+
+      console.log(`[DM Report] ${me.username} jelentette ${msg.senderUsername} üzenetét (${msg.id})`);
+      reply({ ok: true });
+    });
+
     // 1. Meglévő DM partnerek lekérése
     socket.on('dm:get-conversations', () => {
       const self = users.get(socket.id);
@@ -113,6 +150,7 @@ module.exports = function setupDm(io, users) {
   });
 
   return {
-    getDmKey
+    getDmKey,
+    notifyMessageRemoved
   };
 };

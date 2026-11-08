@@ -26,6 +26,98 @@ module.exports = function setupChess(io, app, users) {
     };
   }
 
+  // Játék végi állapot újraszámolása egy admin-szerkesztés után
+  function refreshStatus(session) {
+    const c = session.chess;
+    if (c.isCheckmate()) {
+      session.status = 'checkmate';
+      session.winner = c.turn() === 'w' ? 'black' : 'white';
+      session.reason = 'checkmate';
+    } else if (c.isDraw()) {
+      session.status = 'draw';
+      session.winner = 'draw';
+      session.reason = c.isStalemate() ? 'stalemate' : c.isInsufficientMaterial() ? 'insufficient' : '50-move-rule';
+    } else if (session.status === 'checkmate' || session.status === 'draw') {
+      session.status = session.white && session.black ? 'playing' : 'waiting';
+      session.winner = null;
+      session.reason = null;
+    }
+  }
+
+  // Admin: a tábla szabálytalan módosítása. A módosítás egy másolaton történik, és csak akkor
+  // kerül élesbe, ha a chess.js érvényes állásként be tudja tölteni.
+  function adminEdit(channelId, mutate) {
+    const session = chessSessions.get(channelId);
+    if (!session) throw new Error('Nincs aktív sakk parti ebben a szobában.');
+
+    const draft = new Chess(session.chess.fen());
+    const note = mutate(draft, session) || {};
+
+    const parts = draft.fen().split(' ');
+    if (note.turn) parts[1] = note.turn;
+    parts[3] = '-'; // en passant mező érvénytelenedhet
+    const next = new Chess(parts.join(' ')); // érvénytelen állásnál kivételt dob
+
+    session.chess = next;
+    if (note.entry) {
+      session.lastMove = note.entry;
+      session.history.push({ ...note.entry, fen: next.fen() });
+    }
+    refreshStatus(session);
+    emitSessionUpdate(channelId);
+    return { fen: next.fen(), turn: next.turn(), status: session.status };
+  }
+
+  const isSquare = (sq) => /^[a-h][1-8]$/.test(String(sq));
+
+  const admin = {
+    // Bábu lerakása (piece: { type: 'p|n|b|r|q|k', color: 'w|b' }) vagy eltávolítása (piece = null)
+    putPiece(channelId, square, piece) {
+      if (!isSquare(square)) throw new Error('Érvénytelen mező.');
+      return adminEdit(channelId, (c) => {
+        if (piece === null) {
+          c.remove(square);
+        } else {
+          if (!['p', 'n', 'b', 'r', 'q', 'k'].includes(piece?.type) || !['w', 'b'].includes(piece?.color)) {
+            throw new Error('Érvénytelen bábu.');
+          }
+          c.remove(square);
+          if (!c.put(piece, square)) throw new Error('A bábu nem helyezhető oda (pl. második király).');
+        }
+      });
+    },
+
+    // Bármely bábu átmozgatása a szabályoktól függetlenül (leüti, ami a célmezőn van)
+    forceMove(channelId, from, to, switchTurn = true) {
+      if (!isSquare(from) || !isSquare(to)) throw new Error('Érvénytelen mező.');
+      return adminEdit(channelId, (c) => {
+        const piece = c.get(from);
+        if (!piece) throw new Error(`Nincs bábu a(z) ${from} mezőn.`);
+        const captured = c.get(to);
+        c.remove(from);
+        c.remove(to);
+        if (!c.put(piece, to)) throw new Error('A lépés után érvénytelen állás állna elő.');
+        const mover = piece.color;
+        return {
+          turn: switchTurn ? (mover === 'w' ? 'b' : 'w') : c.turn(),
+          entry: {
+            san: `${from}→${to}*`,
+            from,
+            to,
+            color: mover,
+            piece: piece.type,
+            captured: captured?.type || null
+          }
+        };
+      });
+    },
+
+    setTurn(channelId, turn) {
+      if (turn !== 'w' && turn !== 'b') throw new Error('Érvénytelen sor.');
+      return adminEdit(channelId, () => ({ turn }));
+    }
+  };
+
   function emitSessionUpdate(channelId) {
     const session = chessSessions.get(channelId);
     const sanitized = sanitizeSession(session);
@@ -294,6 +386,7 @@ module.exports = function setupChess(io, app, users) {
       }
       return result;
     },
-    getChessSession: (channelId) => sanitizeSession(chessSessions.get(channelId))
+    getChessSession: (channelId) => sanitizeSession(chessSessions.get(channelId)),
+    admin
   };
 };
