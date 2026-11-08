@@ -37,6 +37,7 @@ const watchParty = require('./watchPartyHandler')(io, app, users);
 const chess = require('./chessHandler')(io, app, users);
 const codeEditor = require('./codeEditorHandler')(io, users);
 const dm = require('./dmHandler')(io, users);
+const browser = require('./browserHandler')(io, app, users);
 
 require('./callHandler')(io); // DM hanghívások szignálozása (WebRTC)
 
@@ -49,13 +50,15 @@ require('./voiceHandler')(io, (socket, channelId) => {
   socket.emit('whiteboard:list', whiteboard.getBoardList(channelId));
   socket.emit('code:tree-data', codeEditor.getProject(channelId));
   socket.emit('watch:state', watchParty.getWatchSession(channelId));
+  socket.emit('browser:state', browser.getBrowserSession(channelId));
 });
 
 require('./authHandler')(io, () => ({
   channelMessages: chat.getChannelMessages(),
   casinoSessions: casino.getCasinoSessions(),
   watchSessions: watchParty.getWatchSessions(),
-  chessSessions: chess.getChessSessions()
+  chessSessions: chess.getChessSessions(),
+  browserSessions: browser.getBrowserSessions()
 }));
 
 require('./adminHandler')(io, { casino, chess, dm });
