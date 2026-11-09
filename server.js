@@ -43,10 +43,12 @@ require('./callHandler')(io); // DM hanghívások szignálozása (WebRTC)
 
 const chat = require('./chatHandler')(io);
 const whiteboard = require('./whiteboardHandler')(io);
+const game = require('./game/gameHandler')(io, { users });
 require('./speedTestHandler')(io);
 
 // A szobába belépő felhasználó megkapja a szobához kötött állapotokat
 require('./voiceHandler')(io, (socket, channelId) => {
+  socket.emit('game:session-updated', { channelId, state: game.getSession(channelId) });
   socket.emit('whiteboard:list', whiteboard.getBoardList(channelId));
   socket.emit('code:tree-data', codeEditor.getProject(channelId));
   socket.emit('watch:state', watchParty.getWatchSession(channelId));
