@@ -44,6 +44,7 @@ require('./callHandler')(io); // DM hanghívások szignálozása (WebRTC)
 const chat = require('./chatHandler')(io);
 const whiteboard = require('./whiteboardHandler')(io);
 const game = require('./game/gameHandler')(io, { users });
+const empire = require('./miskolcEmpireHandler').setupMiskolcEmpire(io, users);
 require('./speedTestHandler')(io);
 
 // A szobába belépő felhasználó megkapja a szobához kötött állapotokat
@@ -53,6 +54,7 @@ require('./voiceHandler')(io, (socket, channelId) => {
   socket.emit('code:tree-data', codeEditor.getProject(channelId));
   socket.emit('watch:state', watchParty.getWatchSession(channelId));
   socket.emit('browser:state', browser.getBrowserSession(channelId));
+  socket.emit('empire:session-updated', { channelId, state: empire.getSession(channelId) });
 });
 
 require('./authHandler')(io, () => ({
@@ -60,7 +62,8 @@ require('./authHandler')(io, () => ({
   casinoSessions: casino.getCasinoSessions(),
   watchSessions: watchParty.getWatchSessions(),
   chessSessions: chess.getChessSessions(),
-  browserSessions: browser.getBrowserSessions()
+  browserSessions: browser.getBrowserSessions(),
+  empireSessions: empire.getEmpireSessions()
 }));
 
 require('./adminHandler')(io, { casino, chess, dm });
