@@ -5,7 +5,7 @@ const {
   getVoiceChannelState, getOnlineUsersList, broadcastPresence, isAdminUsername
 } = require('./state');
 
-// getExtraInitData(): a modulok által adott további kezdőadatok (üzenetek, kaszinó, mozi, sakk)
+// getExtraInitData(): a modulok által adott további kezdőadatok (üzenetek, kaszinó, mozi, sakk, birodalom, phobia)
 module.exports = function setupAuth(io, getExtraInitData) {
   io.on('connection', (socket) => {
     console.log(`[Socket HTTPS] Csatlakozott kliens: ${socket.id}`);

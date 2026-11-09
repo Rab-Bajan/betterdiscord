@@ -9,8 +9,8 @@ const publicPeer = (u) => ({
   isDeafened: u.isDeafened
 });
 
-// onRoomJoined(socket, channelId): a szobához kötött állapotok (rajztáblák, kód, mozi) küldése a belépőnek
-module.exports = function setupVoice(io, onRoomJoined) {
+// onRoomJoined(socket, channelId): a szobához kötött állapotok (rajztáblák, kód, mozi, phobia) küldése a belépőnek
+module.exports = function setupVoice(io, onRoomJoined, onUserSpeaking) {
   io.on('connection', (socket) => {
     socket.on('voice:join', ({ channelId } = {}) => {
       const user = users.get(socket.id);
@@ -71,6 +71,7 @@ module.exports = function setupVoice(io, onRoomJoined) {
       const user = users.get(socket.id);
       if (!user?.voiceChannel) return;
       user.isSpeaking = !!isSpeaking;
+      onUserSpeaking?.(socket.id, user.isSpeaking);
       io.to(user.voiceChannel).emit('voice:user-speaking', { userId: socket.id, isSpeaking: user.isSpeaking });
     });
 

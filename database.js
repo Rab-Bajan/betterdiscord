@@ -122,6 +122,28 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_auth_tokens_account ON auth_tokens(account_id);
 `);
 
+// 5. MiskolcPhobia táblák: profilok és meccstörténet
+db.exec(`
+  CREATE TABLE IF NOT EXISTS phobia_profiles (
+    userId TEXT PRIMARY KEY,
+    balance_ft INTEGER DEFAULT 1000,
+    xp INTEGER DEFAULT 0,
+    level INTEGER DEFAULT 1,
+    hunter_rank TEXT DEFAULT 'Kezdő Roncskutató'
+  );
+
+  CREATE TABLE IF NOT EXISTS phobia_match_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    matchId TEXT,
+    userId TEXT,
+    ghostType TEXT,
+    location TEXT,
+    result TEXT,
+    reward_ft INTEGER,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+`);
+
 console.log(`[SQLite] Adatbázis inicializálva és kész: ${dbPath}`);
 
 // ==========================================

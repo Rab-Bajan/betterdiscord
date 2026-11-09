@@ -45,17 +45,25 @@ const chat = require('./chatHandler')(io);
 const whiteboard = require('./whiteboardHandler')(io);
 const game = require('./game/gameHandler')(io, { users });
 const empire = require('./miskolcEmpireHandler').setupMiskolcEmpire(io, users);
+const phobia = require('./miskolcPhobiaHandler').setupMiskolcPhobia(io, users);
 require('./speedTestHandler')(io);
 
 // A szobába belépő felhasználó megkapja a szobához kötött állapotokat
-require('./voiceHandler')(io, (socket, channelId) => {
-  socket.emit('game:session-updated', { channelId, state: game.getSession(channelId) });
-  socket.emit('whiteboard:list', whiteboard.getBoardList(channelId));
-  socket.emit('code:tree-data', codeEditor.getProject(channelId));
-  socket.emit('watch:state', watchParty.getWatchSession(channelId));
-  socket.emit('browser:state', browser.getBrowserSession(channelId));
-  socket.emit('empire:session-updated', { channelId, state: empire.getSession(channelId) });
-});
+require('./voiceHandler')(
+  io,
+  (socket, channelId) => {
+    socket.emit('game:session-updated', { channelId, state: game.getSession(channelId) });
+    socket.emit('whiteboard:list', whiteboard.getBoardList(channelId));
+    socket.emit('code:tree-data', codeEditor.getProject(channelId));
+    socket.emit('watch:state', watchParty.getWatchSession(channelId));
+    socket.emit('browser:state', browser.getBrowserSession(channelId));
+    socket.emit('empire:session-updated', { channelId, state: empire.getSession(channelId) });
+    socket.emit('phobia:session-updated', { channelId, state: phobia.getSession(channelId) });
+  },
+  (socketId, isSpeaking) => {
+    phobia.handleUserSpeaking(socketId, isSpeaking);
+  }
+);
 
 require('./authHandler')(io, () => ({
   channelMessages: chat.getChannelMessages(),
@@ -63,7 +71,8 @@ require('./authHandler')(io, () => ({
   watchSessions: watchParty.getWatchSessions(),
   chessSessions: chess.getChessSessions(),
   browserSessions: browser.getBrowserSessions(),
-  empireSessions: empire.getEmpireSessions()
+  empireSessions: empire.getEmpireSessions(),
+  phobiaSessions: phobia.getPhobiaSessions()
 }));
 
 require('./adminHandler')(io, { casino, chess, dm });
