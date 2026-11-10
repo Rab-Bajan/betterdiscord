@@ -195,6 +195,10 @@ const DEFAULT_ZONES = Object.freeze({
 
 function getCoords(obj) {
   if (!obj) return { x: 0, y: 0, z: 0 };
+  // A live x/z (the ghost's authoritative position) wins over a stale initial position array
+  if (typeof obj.x === 'number' && typeof obj.z === 'number') {
+    return { x: obj.x, y: typeof obj.y === 'number' ? obj.y : 0, z: obj.z };
+  }
   if (Array.isArray(obj.position)) {
     return {
       x: typeof obj.position[0] === 'number' ? obj.position[0] : 0,
@@ -267,10 +271,9 @@ function emitSessionEvent(io, session, eventName, payload) {
     session.broadcast(eventName, payload);
   } else if (io) {
     const targetRoom = session?.roomId || session?.id;
+    // Nincs globális io.emit tartalék: szoba nélkül az esemény elvész
     if (targetRoom && typeof io.to === 'function') {
       io.to(targetRoom).emit(eventName, payload);
-    } else if (typeof io.emit === 'function') {
-      io.emit(eventName, payload);
     }
   }
 }
@@ -1051,9 +1054,13 @@ function updateGhostAI(ghost, session, deltaMs, io) {
       return;
     }
 
+    // Hidden players (lockers / trunks) and players inside the truck safe zone cannot be hunted
+    const huntable = living.filter((p) => !p.hidden && !p.isInsideTruck);
+
     // Sensor evaluation (Line-of-Sight, Flashlight, Voice/Mic)
-    const sensorResult = evaluateGhostSensors(ghost, living);
-    ghost.targetPlayerId = sensorResult.target ? sensorResult.target.id : null;
+    const sensorResult = evaluateGhostSensors(ghost, huntable);
+    const targetKey = (t) => (t ? (t.id ?? t.socketId ?? t.userId ?? null) : null);
+    ghost.targetPlayerId = targetKey(sensorResult.target);
     ghost.hasLOS = sensorResult.hasLOS;
 
     if (sensorResult.target) {
@@ -1077,8 +1084,9 @@ function updateGhostAI(ghost, session, deltaMs, io) {
       }
 
       // Move towards target
-      const dx = (target.x || 0) - ghost.x;
-      const dz = (target.z || 0) - ghost.z;
+      const tc = getCoords(target);
+      const dx = tc.x - ghost.x;
+      const dz = tc.z - ghost.z;
       const dist = Math.sqrt(dx * dx + dz * dz);
 
       if (dist > 0.001) {
@@ -1092,7 +1100,7 @@ function updateGhostAI(ghost, session, deltaMs, io) {
       if (dist <= 0.8) {
         ghost.state = GHOST_STATES.KILL_SEQUENCE;
         ghost.killTimer = 2.0;
-        ghost.victimId = target.id;
+        ghost.victimId = targetKey(target);
 
         // Mark victim
         target.alive = false;
@@ -1105,9 +1113,9 @@ function updateGhostAI(ghost, session, deltaMs, io) {
             if (item) {
               session.droppedItems.push({
                 ...item,
-                x: target.x || ghost.x,
+                x: tc.x || ghost.x,
                 y: 0.05,
-                z: target.z || ghost.z
+                z: tc.z || ghost.z
               });
             }
           }
@@ -1115,7 +1123,10 @@ function updateGhostAI(ghost, session, deltaMs, io) {
         }
 
         emitSessionEvent(io, session, 'phobia:player-killed', {
-          victimId: target.id,
+          victimId: targetKey(target),
+          playerId: targetKey(target),
+          userId: target.userId,
+          username: target.username,
           jumpscareDuration: 2.0
         });
       }

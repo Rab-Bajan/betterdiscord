@@ -2,6 +2,7 @@
 // Validates socket events, authoritative 12 Hz tick loop, physics/environment states,
 // circuit breaker overload (max 6 lights), Mobile Jesus hunt cancellation, and SQLite persistence.
 
+process.env.PHOBIA_TEST_HOOKS = '1'; // teszt hookok + teszt szoba azonosító (test_room_*)
 const assert = require('assert');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -199,9 +200,9 @@ async function runPhobiaBackendTests() {
     const lightIds = [
       'light_mazsahaz_office',
       'light_mazsahaz_hall',
-      'light_hangar_bay1',
-      'light_hangar_bay2',
-      'light_kennel_shed',
+      'light_hangar_flood_1',
+      'light_hangar_flood_2',
+      'light_sufni_1',
       'light_gate_floodlight'
     ];
 
@@ -271,6 +272,7 @@ async function runPhobiaBackendTests() {
     console.log('>>> [TEST] Step 8: Drinking Borsodi Szilvapálinka for +35% sanity...');
     const player1 = session.players.get(client1.id);
     player1.sanity = 45.0; // Reduce sanity to test restoration
+    player1.inventory[1] = { id: 'sanity_palinka_1', type: 'sanity_palinka', usesLeft: 1 }; // a pálinkát tartani kell
 
     const sanityPromise = new Promise((resolve) => {
       client1.once('phobia:sanity-updated', (data) => resolve(data));
@@ -300,6 +302,35 @@ async function runPhobiaBackendTests() {
     assert.strictEqual(doorData.open, true, 'Door should be opened');
     assert.strictEqual(doorData.angle, 1.0, 'Door angle should be 1.0');
     console.log('  [PASS] Step 9: Hinged door opened with angle 1.0.');
+
+    // ------------------------------------------------------------------------
+    // Step 9b: Client item throw rebroadcast (sender excluded, velocity clamped)
+    // ------------------------------------------------------------------------
+    console.log('>>> [TEST] Step 9b: Client emits phobia:item-thrown, peer receives clamped impulse...');
+    const thrownPeer = new Promise((resolve) => client2.once('phobia:item-thrown', resolve));
+    let senderGotEcho = false;
+    client1.once('phobia:item-thrown', () => { senderGotEcho = true; });
+    const thrower = session.players.get(client1.id);
+    const thrownId = session.scrapProps[0].id;
+
+    // invalid payload and unknown item are ignored
+    client1.emit('phobia:item-thrown', { roomId: testRoomId, itemId: 'nope', position: { x: 0, y: 0, z: 0 }, velocity: { x: 1, y: 1, z: 1 } });
+    client1.emit('phobia:item-thrown', { roomId: testRoomId, itemId: thrownId, position: { x: NaN, y: 0, z: 0 }, velocity: { x: 1, y: 1, z: 1 } });
+    client1.emit('phobia:item-thrown', {
+      roomId: testRoomId,
+      itemId: thrownId,
+      position: { x: thrower.position[0], y: 1, z: thrower.position[2] },
+      velocity: { x: 300, y: 0, z: 400 }
+    });
+
+    const peerThrow = await thrownPeer;
+    assert.strictEqual(peerThrow.propId, thrownId, 'propId should match');
+    assert.strictEqual(peerThrow.x, thrower.position[0], 'x should be echoed');
+    assert.strictEqual(peerThrow.y, 1, 'y should be echoed');
+    assert(Math.abs(Math.hypot(...peerThrow.impulse) - 20) < 1e-9, 'impulse magnitude must be clamped to 20');
+    await new Promise((r) => setTimeout(r, 100));
+    assert.strictEqual(senderGotEcho, false, 'sender must not receive its own throw');
+    console.log('  [PASS] Step 9b: item-thrown validated, clamped and rebroadcast to peer only.');
 
     // ------------------------------------------------------------------------
     // Step 10: Journal Verdict Submission & SQLite Persistence Verification
