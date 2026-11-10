@@ -168,6 +168,10 @@ async function runPhobiaBackendTests() {
     if (!session.ghost.evidence.includes('emf_5')) {
       session.ghost.evidence.push('emf_5');
     }
+    // hasEvidence() a szellem aktív bizonyítékait nézi (evidenceCount szerint), ezért ott is pótoljuk
+    if (Array.isArray(session.ghost.activeEvidence) && !session.ghost.activeEvidence.includes('emf_5')) {
+      session.ghost.activeEvidence.push('emf_5');
+    }
     if (session.ghost.type && session.ghost.type.evidences && !session.ghost.type.evidences.includes('emf_5')) {
       session.ghost.type.evidences.push('emf_5');
     }
