@@ -308,11 +308,145 @@ function isFreezingZone(ghost) {
   return ghost.hasEvidence('freezing_temperatures');
 }
 
+// The speed trait belongs to the ghost type, independent of which evidences are obtainable
+function isFreezingType(ghost) {
+  return Boolean(ghost?.type?.evidences?.includes('freezing_temperatures'));
+}
+
+// Random subset (Fisher-Yates on a copy) of `count` evidences. The input is never mutated.
+function pickActiveEvidence(evidences, count, rng = Math.random) {
+  const pool = Array.isArray(evidences) ? evidences.slice() : [];
+  const n = Number.isFinite(count) ? Math.max(0, Math.min(pool.length, Math.floor(count))) : pool.length;
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    const tmp = pool[i];
+    pool[i] = pool[j];
+    pool[j] = tmp;
+  }
+  return pool.slice(0, n);
+}
+
+function rngOf(ghost) {
+  return ghost && typeof ghost.rng === 'function' ? ghost.rng : Math.random;
+}
+
+// Per-archetype behaviour tells (everything not listed falls back to the defaults)
+const DEFAULT_TELLS = Object.freeze({
+  interactionChance: 0.2, // share of idle decisions that become an interaction
+  roamAwayChance: 0.35,   // chance a waypoint leaves the favourite room
+  eventMul: 1,            // ghost event frequency multiplier
+  huntRollMul: 1,         // hunt roll probability multiplier
+  hearingRange: 8,        // metres at which speaking players are heard
+  huntFindChance: 0.06,   // per second chance to find a hidden player it is searching
+  curiosity: 0.5          // chance to walk to a noisy / electronics-carrying player
+});
+
+const ARCHETYPE_TELLS = Object.freeze({
+  lakatos_armando: { interactionChance: 0.35, curiosity: 0.7 },
+  kolompar_kalman: { roamAwayChance: 0.5, huntFindChance: 0.08 },
+  rostas_bela: { eventMul: 2, hearingRange: 10 },
+  bunko_lajos: { roamAwayChance: 0.15, huntFindChance: 0.05 },
+  sarkozi_geza: { hearingRange: 5, huntFindChance: 0.03, eventMul: 0.5, roamAwayChance: 0.5 },
+  raffael_dzsenifer: { huntRollMul: 1.4, hearingRange: 10, huntFindChance: 0.12 },
+  keresztapa: { interactionChance: 0.3, huntFindChance: 0.07, eventMul: 1.5 }
+});
+
+function tellsOf(ghost) {
+  return { ...DEFAULT_TELLS, ...(ARCHETYPE_TELLS[ghost?.type?.id] || {}) };
+}
+
+const HIDE_SIGHT_RANGE = 12.0; // ghost must be this close (with LOS) to see a player enter a hiding spot
+const HIDDEN_VOICE_RANGE = 5.0; // a speaking hidden player is only heard this close
+const SPOT_SEARCH_TIME = 5.0;   // seconds the ghost searches a hiding spot before giving up
+const SPOT_REJECT_TIME = 15.0;  // seconds a searched spot is ignored afterwards
+
+function playerKey(p) {
+  return p ? (p.id ?? p.socketId ?? p.userId ?? null) : null;
+}
+
+function isHiddenPlayer(p) {
+  return Boolean(p && (p.hidingSpotId || p.hidden));
+}
+
+function isSpeakingPlayer(p) {
+  return Boolean(
+    p && (
+      p.isSpeaking === true ||
+      p.micActive === true ||
+      p.speaking === true ||
+      (typeof p.audioLevel === 'number' && p.audioLevel > 0.15)
+    )
+  );
+}
+
+function hasElectronicsOn(p) {
+  return Boolean(
+    p && (p.flashlightOn === true || (p.heldItem && p.heldItem.on === true))
+  );
+}
+
+function hasSight(ghost, p, range) {
+  return !p.noLOS && distance2D(ghost, p) <= range;
+}
+
+// Detect hide transitions and let the ghost record whether it watched the player enter the spot.
+function trackHiding(ghost, players) {
+  if (!ghost.hideTrack) ghost.hideTrack = new Map();
+  const inHunt = ghost.state === GHOST_STATES.ACTIVE_HUNT_CHASE || ghost.state === GHOST_STATES.KILL_SEQUENCE;
+  for (const p of players) {
+    const key = playerKey(p);
+    if (key === null) continue;
+    const spot = p.hidingSpotId || (p.hidden ? '_hidden' : null);
+    if (!ghost.hideTrack.has(key)) {
+      ghost.hideTrack.set(key, spot);
+      continue;
+    }
+    if (ghost.hideTrack.get(key) === spot) continue;
+    ghost.hideTrack.set(key, spot);
+    p.seenEnteringHide = Boolean(spot) && inHunt && hasSight(ghost, p, HIDE_SIGHT_RANGE);
+  }
+}
+
+// Nearest player who is audible (speaking) or carrying a powered device close to the ghost
+function findStimulus(ghost, players, hearingRange) {
+  let best = null;
+  let bestDist = Infinity;
+  for (const p of players) {
+    const dist = distance2D(ghost, p);
+    const speaking = isSpeakingPlayer(p);
+    if (isHiddenPlayer(p)) {
+      if (!(speaking && dist <= HIDDEN_VOICE_RANGE)) continue;
+    } else if (!((speaking && dist <= hearingRange) || (hasElectronicsOn(p) && dist <= 6.0))) {
+      continue;
+    }
+    if (dist < bestDist) {
+      best = p;
+      bestDist = dist;
+    }
+  }
+  return best;
+}
+
+function moveToward(ghost, pos, dt, speed, stopDist = 0) {
+  const dx = pos.x - ghost.x;
+  const dz = pos.z - ghost.z;
+  const dist = Math.sqrt(dx * dx + dz * dz);
+  if (dist > stopDist && dist > 0.001) {
+    const step = Math.min(dist - stopDist, speed * dt);
+    ghost.x += (dx / dist) * step;
+    ghost.z += (dz / dist) * step;
+    ghost.rot = Math.atan2(dx, dz);
+  }
+  return dist;
+}
+
 // ---------------------------------------------------------------------------
 // 3. FACTORY: createGhostAI
 // ---------------------------------------------------------------------------
 
-function createGhostAI(type, roomCoordinates) {
+function createGhostAI(type, roomCoordinates, options = {}) {
+  const rng = typeof options?.rng === 'function' ? options.rng : Math.random;
+  const evidenceCount = Number.isFinite(options?.evidenceCount) ? options.evidenceCount : 3;
   let archetype = null;
   if (type) {
     if (typeof type === 'object' && type.id && type.evidences) {
@@ -323,7 +457,7 @@ function createGhostAI(type, roomCoordinates) {
   }
   if (!archetype) {
     const keys = Object.keys(GHOST_ARCHETYPES);
-    const randomKey = keys[Math.floor(Math.random() * keys.length)];
+    const randomKey = keys[Math.floor(rng() * keys.length)];
     archetype = GHOST_ARCHETYPES[randomKey];
   }
 
@@ -342,7 +476,7 @@ function createGhostAI(type, roomCoordinates) {
   } else if (roomCoordinates && typeof roomCoordinates === 'object') {
     zones = roomCoordinates;
     const zoneKeys = Object.keys(zones);
-    const favoriteKey = zones.zone1_mazsahaz ? 'zone1_mazsahaz' : zoneKeys[Math.floor(Math.random() * zoneKeys.length)];
+    const favoriteKey = zones.zone1_mazsahaz ? 'zone1_mazsahaz' : zoneKeys[Math.floor(rng() * zoneKeys.length)];
     favoriteRoom = zones[favoriteKey];
   } else {
     favoriteRoom = DEFAULT_ZONES.zone1_mazsahaz;
@@ -362,7 +496,9 @@ function createGhostAI(type, roomCoordinates) {
     id: 'ghost_' + Math.random().toString(36).substring(2, 9),
     type: archetype,
     state: GHOST_STATES.IDLE,
-    stateTimer: 3.0 + Math.random() * 5.0, // 3-8s
+    stateTimer: 3.0 + rng() * 5.0, // 3-8s
+    rng,
+    activeEvidence: pickActiveEvidence(archetype.evidences, evidenceCount, rng),
     favoriteRoom: favoriteRoom,
     currentRoomId: favoriteRoom ? favoriteRoom.id : 'zone1_mazsahaz',
     x: initX,
@@ -384,15 +520,24 @@ function createGhostAI(type, roomCoordinates) {
     killTimer: 0.0,
     smudgeBlindedTimer: 0.0,
     huntBlockedBySmudgeUntil: 0,
-    breakerSabotageCooldown: 10.0 + Math.random() * 5.0,
+    breakerSabotageCooldown: 10.0 + rng() * 5.0,
     lastHuntRollTime: 0,
     navTarget: { x: initX, y: initY, z: initZ },
     zones: zones,
+    awayFromFav: false,
+    huntClock: 0,
+    lastKnownPos: null,
+    searchPhase: null,
+    searchTimer: 0,
+    spotSearch: null,
+    searchedUntil: {},
+    hideTrack: new Map(),
 
     hasEvidence(evidenceId) {
       if (!this.type || !this.type.evidences) return false;
       const key = String(evidenceId).toLowerCase();
-      const direct = this.type.evidences.some(e => e.toLowerCase() === key);
+      const obtainable = Array.isArray(this.activeEvidence) ? this.activeEvidence : this.type.evidences;
+      const direct = obtainable.some(e => e.toLowerCase() === key);
       if (direct) return true;
       if (this.type.isMimic && (key === 'ghost_orbs' || key === 'szellemgömb' || key === 'szellemgomb')) {
         return true;
@@ -603,65 +748,57 @@ function applySmudgeSticks(ghost, player, session, io) {
 // 7. SENSOR PERCEPTION ENGINE
 // ---------------------------------------------------------------------------
 
+/**
+ * Hunt-time perception. Returns a target only when the ghost actually senses someone:
+ * line of sight (<= 20 m), speech (per-type hearing range), or a powered device (<= 12 m).
+ * Hidden players (locker / trunk) are invisible and silent unless the ghost saw them enter
+ * (player.seenEnteringHide) or they speak within 5 m; spots already searched are ignored for a while.
+ */
 function evaluateGhostSensors(ghost, livingPlayers) {
   if (!livingPlayers || livingPlayers.length === 0) {
     return { target: null, hasLOS: false, reason: null };
   }
 
-  let candidates = [];
+  const hearingRange = tellsOf(ghost).hearingRange;
+  let best = null;
 
   for (const player of livingPlayers) {
     const dist = distance2D(ghost, player);
+    const speaking = isSpeakingPlayer(player);
     let score = 0;
     let hasLOS = false;
     let reason = 'proximity';
 
-    // 1. Direct Line-of-Sight within 20m
-    if (dist <= 20.0 && !player.noLOS) {
-      hasLOS = true;
-      score += 100 - dist;
-      reason = 'direct_los';
+    if (isHiddenPlayer(player)) {
+      const key = playerKey(player);
+      const ignoredUntil = key !== null && ghost.searchedUntil ? ghost.searchedUntil[key] : undefined;
+      if (ignoredUntil !== undefined && ignoredUntil > (ghost.huntClock || 0)) continue;
+      const sawEnter = player.seenEnteringHide === true;
+      if (!sawEnter && !(speaking && dist <= HIDDEN_VOICE_RANGE)) continue;
+      score = 40 + (30 - Math.min(30, dist));
+      reason = sawEnter ? 'saw_hide' : 'voice_hidden';
+    } else {
+      if (dist <= 20.0 && !player.noLOS) {
+        hasLOS = true;
+        score += 100 - dist;
+        reason = 'direct_los';
+      }
+      if (dist <= hearingRange && speaking) {
+        score += 80 + (hearingRange - dist) * 5;
+        if (!hasLOS) reason = 'voice_mic';
+      }
+      if (dist <= 12.0 && hasElectronicsOn(player)) {
+        score += 60 + (12.0 - dist) * 4;
+        if (!hasLOS && !speaking) reason = 'flashlight';
+      }
     }
 
-    // 2. Voice / Microphone Sensing within 8m
-    const isSpeaking = Boolean(
-      player.micActive === true ||
-      player.speaking === true ||
-      (typeof player.audioLevel === 'number' && player.audioLevel > 0.15)
-    );
-    if (dist <= 8.0 && isSpeaking) {
-      score += 80 + (8.0 - dist) * 5;
-      if (!hasLOS) reason = 'voice_mic';
+    if (score > 0 && (!best || score > best.score)) {
+      best = { player, score, hasLOS, reason };
     }
-
-    // 3. Flashlight Sensing within 12m (through darkness and obstacles)
-    const flashlightOn = Boolean(
-      player.flashlightOn === true ||
-      (player.heldItem && (player.heldItem.type?.includes('flashlight') || player.heldItem.id?.includes('flashlight')) && player.heldItem.on)
-    );
-    if (dist <= 12.0 && flashlightOn) {
-      score += 60 + (12.0 - dist) * 4;
-      if (!hasLOS && !isSpeaking) reason = 'flashlight';
-    }
-
-    // Hiding penalty if quiet and no light
-    if (player.hidden && !isSpeaking && !flashlightOn) {
-      score -= 50;
-    }
-
-    candidates.push({ player, dist, score, hasLOS, reason });
   }
 
-  candidates.sort((a, b) => b.score - a.score);
-
-  const best = candidates[0];
-  if (!best || best.score <= 0) {
-    // Pick nearest player as fallback
-    candidates.sort((a, b) => a.dist - b.dist);
-    const nearest = candidates[0];
-    return { target: nearest?.player || null, hasLOS: false, reason: 'nearest_fallback' };
-  }
-
+  if (!best) return { target: null, hasLOS: false, reason: null };
   return { target: best.player, hasLOS: best.hasLOS, reason: best.reason };
 }
 
@@ -689,6 +826,11 @@ function startHuntInitiation(ghost, session, io) {
   ghost.visible = false;
   ghost.losTime = 0.0;
   ghost.targetPlayerId = null;
+  ghost.huntClock = 0;
+  ghost.lastKnownPos = null;
+  ghost.searchPhase = null;
+  ghost.spotSearch = null;
+  ghost.searchedUntil = {};
 
   if (session) {
     session.huntActive = true;
@@ -705,58 +847,197 @@ function triggerHunt(ghost, session, io) {
   return startHuntInitiation(ghost, session, io);
 }
 
+function nearestTo(list, pos, maxDist) {
+  let best = null;
+  let bestDist = maxDist;
+  for (const item of list) {
+    const d = distance2D(item, pos);
+    if (d <= bestDist) {
+      best = item;
+      bestDist = d;
+    }
+  }
+  return best;
+}
+
+function weightedPick(rng, entries) {
+  const total = entries.reduce((sum, e) => sum + e.weight, 0);
+  if (total <= 0) return null;
+  let roll = rng() * total;
+  for (const e of entries) {
+    roll -= e.weight;
+    if (roll <= 0) return e;
+  }
+  return entries[entries.length - 1];
+}
+
+function ghostEventTypeFor(ghost, session) {
+  const id = ghost.type?.id;
+  const entries = [
+    { type: 'manifestation', weight: 3 },
+    { type: 'whisper', weight: 3 },
+    { type: 'light_flicker', weight: 2 },
+    { type: 'apparition', weight: 1 }
+  ];
+  if (session?.doors && Object.keys(session.doors).length > 0) entries.push({ type: 'door_slam', weight: 2 });
+  if (id === 'rostas_bela') entries.push({ type: 'scream', weight: 4 });
+  if (id === 'keresztapa') entries.push({ type: 'mimic', weight: 4 });
+  if (id === 'sarkozi_geza') entries.push({ type: 'shadow', weight: 3 });
+  return weightedPick(rngOf(ghost), entries).type;
+}
+
+const GHOST_EVENT_PROFILES = {
+  manifestation: { visible: true, sanity: 10, sfx: 'sfx_ghost_whisper' },
+  apparition: { visible: true, sanity: 6, sfx: 'sfx_ghost_breath' },
+  whisper: { visible: false, sanity: 4, sfx: 'sfx_ghost_whisper' },
+  light_flicker: { visible: false, sanity: 3, sfx: 'sfx_light_buzz' },
+  door_slam: { visible: false, sanity: 5, sfx: 'sfx_door_slam' },
+  scream: { visible: false, sanity: 6, sfx: 'sfx_ghost_scream' },
+  mimic: { visible: false, sanity: 5, sfx: 'sfx_mimic_voice' },
+  shadow: { visible: true, sanity: 4, sfx: 'sfx_silence' }
+};
+
 function triggerGhostEvent(ghost, session, io) {
   if (!ghost) return;
+  const rng = rngOf(ghost);
+  const eventType = ghostEventTypeFor(ghost, session);
+  const profile = GHOST_EVENT_PROFILES[eventType];
+
   ghost.state = GHOST_STATES.GHOST_EVENT;
-  ghost.eventTimer = 2.0 + Math.random() * 3.0; // 2.0s - 5.0s
-  ghost.visible = true;
+  ghost.eventTimer = 2.0 + rng() * 3.0; // 2.0s - 5.0s
+  ghost.eventVisible = profile.visible;
+  ghost.visible = profile.visible;
   ghost.speed = 0.0;
 
-  // Lightbulb shatter evaluation
-  const shatterRoll = Math.random();
+  // Lightbulb shatter evaluation: smashes the light closest to the ghost
   const shatterProb = (ghost.type?.id === 'rostas_bela') ? 0.50 : 0.25;
-  if (shatterRoll < shatterProb && session) {
+  if (rng() < shatterProb && session) {
+    const lights = Object.values(session.lights || {}).filter((l) => l && l.id && !l.shattered);
+    const light = nearestTo(lights, ghost, 15.0);
+    if (light) {
+      light.shattered = true;
+      light.state = false;
+    }
     emitSessionEvent(io, session, 'phobia:lightbulb-shattered', {
-      lightId: 'zone1_mazsahaz_office',
+      lightId: light ? light.id : 'zone1_mazsahaz_office',
       zoneId: ghost.currentRoomId
     });
   }
 
-  // Shock sanity penalty (-10% to nearby players in LOS within 8m)
-  const living = getLivingPlayers(session);
-  for (const p of living) {
-    if (distance2D(p, ghost) <= 8.0) {
-      if (typeof p.sanity === 'number') {
-        p.sanity = Math.max(0, p.sanity - 10);
-      }
+  const extra = {};
+  if (eventType === 'light_flicker') {
+    emitSessionEvent(io, session, 'phobia:electronics-flicker', { duration: 2.0 });
+  } else if (eventType === 'door_slam') {
+    const doors = Object.values(session.doors || {}).filter((d) => d && d.id && !HIDE_DOOR_PATTERN.test(d.id));
+    const door = nearestTo(doors, ghost, 20.0) || doors[0];
+    if (door) {
+      setDoorState(session, io, door, false);
+      extra.doorId = door.id;
+    }
+    emitSessionEvent(io, session, 'phobia:audio-event', { sfx: 'sfx_door_slam' });
+  } else if (eventType === 'scream') {
+    const screams = ghost.type?.screams || [];
+    if (screams.length > 0) extra.scream = screams[Math.floor(rng() * screams.length)];
+  } else if (eventType === 'mimic') {
+    const others = Object.keys(GHOST_ARCHETYPES).filter((k) => k !== ghost.type?.id);
+    extra.mimicOf = others[Math.floor(rng() * others.length)];
+  }
+
+  // Sanity shock to nearby players; witnesses are reported for objective tracking
+  const witnessIds = [];
+  for (const p of getLivingPlayers(session)) {
+    const d = distance2D(p, ghost);
+    if (d <= 8.0 && typeof p.sanity === 'number') {
+      p.sanity = Math.max(0, p.sanity - profile.sanity);
+    }
+    if (d <= 10.0) {
+      const key = playerKey(p);
+      if (key !== null) witnessIds.push(key);
     }
   }
 
   emitSessionEvent(io, session, 'phobia:ghost-event', {
     duration: ghost.eventTimer,
-    type: 'manifestation',
-    sfx: 'sfx_ghost_whisper',
-    lightColor: '#FF1111'
+    type: eventType,
+    sfx: profile.sfx,
+    lightColor: '#FF1111',
+    x: ghost.x,
+    y: ghost.y,
+    z: ghost.z,
+    witnessIds,
+    ...extra
   });
 }
 
-function triggerInteraction(ghost, session, io, targetProp) {
-  if (!ghost) return;
+// Doors that double as hiding spots or the truck must not be driven by the ghost
+const HIDE_DOOR_PATTERN = /truck|locker|trunk/i;
+
+function setDoorState(session, io, door, open) {
+  door.open = open;
+  door.angle = open ? 1.0 : 0.0;
+  const payload = { doorId: door.id, angle: door.angle, open: door.open };
+  emitSessionEvent(io, session, 'phobia:door-updated', payload);
+  emitSessionEvent(io, session, 'phobia:door-toggled', payload);
+}
+
+function setLightState(session, io, light, state) {
+  light.state = state;
+  const activeLights = Object.values(session.lights || {}).filter((l) => l && l.state && !l.shattered).map((l) => l.id);
+  const payload = { lightId: light.id, state, activeLights };
+  emitSessionEvent(io, session, 'phobia:light-updated', payload);
+  emitSessionEvent(io, session, 'phobia:light-toggled', payload);
+}
+
+// Chooses what to touch, biased towards the players the ghost is currently aware of.
+function chooseInteraction(ghost, session) {
+  const rng = rngOf(ghost);
+  const tells = tellsOf(ghost);
+  const living = getLivingPlayers(session);
+  const focus = findStimulus(ghost, living, tells.hearingRange) ||
+    nearestTo(living.filter((p) => !isHiddenPlayer(p)), ghost, 10.0) ||
+    ghost;
+  const playersNear = focus !== ghost;
+
+  const props = (Array.isArray(session?.scrapProps) ? session.scrapProps : []).filter((p) => p && p.id);
+  const doors = Object.values(session?.doors || {}).filter((d) => d && d.id && !HIDE_DOOR_PATTERN.test(d.id));
+  const allLights = Object.values(session?.lights || {}).filter((l) => l && l.id && !l.shattered);
+  const breakerOk = session?.breakerOn !== false;
+  const litNear = allLights.filter((l) => l.state && distance2D(l, focus) <= 12.0);
+  const lightPool = playersNear && litNear.length > 0 ? litNear : allLights.filter((l) => distance2D(l, focus) <= 12.0);
+
+  const nearProps = props.filter((p) => distance2D(p, focus) <= 12.0);
+  const nearDoors = doors.filter((d) => distance2D(d, focus) <= 10.0);
 
   const isPoltergeist = ghost.type?.id === 'lakatos_armando';
-  const hasEMF5 = ghost.hasEvidence('emf_5');
+  const entries = [{ kind: 'throw', weight: nearProps.length ? (isPoltergeist ? 4 : 2) : 0.5, target: nearestTo(nearProps, focus, 12.0) }];
+  if (nearDoors.length) entries.push({ kind: 'door', weight: 2, target: nearestTo(nearDoors, focus, 10.0) });
+  if (breakerOk && lightPool.length) {
+    entries.push({ kind: 'light', weight: playersNear && litNear.length ? 3 : 1.5, target: nearestTo(lightPool, focus, 12.0) });
+  }
+  return weightedPick(rng, entries);
+}
+
+function throwProp(ghost, session, io, targetProp) {
+  const rng = rngOf(ghost);
+  const isPoltergeist = ghost.type?.id === 'lakatos_armando';
 
   // Scrap prop throw physics
-  let count = isPoltergeist ? (3 + Math.floor(Math.random() * 3)) : 1; // 3-5 items for Poltergeist
-  let force = isPoltergeist ? (9.0 + Math.random() * 6.0) : (4.5 + Math.random() * 4.5); // 9-15 vs 4.5-9 m/s
-  let emfLevel = hasEMF5 ? 5 : (Math.random() < 0.5 ? 2 : 3);
+  const count = isPoltergeist ? (3 + Math.floor(rng() * 3)) : 1; // 3-5 items for Poltergeist
+  const force = isPoltergeist ? (9.0 + rng() * 6.0) : (4.5 + rng() * 4.5); // 9-15 vs 4.5-9 m/s
 
-  const angle = Math.random() * Math.PI * 2;
+  const angle = rng() * Math.PI * 2;
   const impulse = {
     x: Math.cos(angle) * force,
     y: 0.35 * force,
     z: Math.sin(angle) * force
   };
+
+  // The server keeps the authoritative prop transform (late joiners see the moved prop)
+  if (targetProp && typeof targetProp.x === 'number' && typeof targetProp.z === 'number') {
+    targetProp.x += impulse.x * 0.12;
+    targetProp.z += impulse.z * 0.12;
+    targetProp.y = Math.max(0.1, typeof targetProp.y === 'number' ? targetProp.y : 0.1);
+  }
 
   emitSessionEvent(io, session, 'phobia:item-thrown', {
     itemId: targetProp?.id || 'scrap_pipe_1',
@@ -764,15 +1045,45 @@ function triggerInteraction(ghost, session, io, targetProp) {
     impulse: impulse,
     force: force,
     thrownCount: count,
-    ghostType: ghost.type.name
+    ghostType: ghost.type.name,
+    ...(targetProp && typeof targetProp.x === 'number'
+      ? { item: { id: targetProp.id, type: targetProp.type, x: targetProp.x, y: targetProp.y, z: targetProp.z } }
+      : {})
   });
+}
+
+function triggerInteraction(ghost, session, io, targetProp) {
+  if (!ghost) return;
+  const rng = rngOf(ghost);
+
+  let surfaceId = targetProp?.id || null;
+  let choice = null;
+  if (!targetProp && session && (session.scrapProps || session.doors || session.lights)) {
+    choice = chooseInteraction(ghost, session);
+  }
+
+  if (choice && choice.kind === 'door' && choice.target) {
+    setDoorState(session, io, choice.target, !choice.target.open);
+    if (choice.target.open === false) emitSessionEvent(io, session, 'phobia:audio-event', { sfx: 'sfx_door_slam' });
+    surfaceId = choice.target.id;
+  } else if (choice && choice.kind === 'light' && choice.target) {
+    setLightState(session, io, choice.target, !choice.target.state);
+    surfaceId = choice.target.id;
+  } else {
+    const prop = targetProp || (choice && choice.target) || null;
+    throwProp(ghost, session, io, prop);
+    surfaceId = prop?.id || surfaceId;
+  }
+
+  const hasEMF5 = ghost.hasEvidence('emf_5');
+  const emfLevel = hasEMF5 ? 5 : (rng() < 0.5 ? 2 : 3);
 
   emitSessionEvent(io, session, 'phobia:emf-reading', {
     level: emfLevel,
     x: ghost.x,
     y: ghost.y,
     z: ghost.z,
-    targetId: targetProp?.id || 'scrap_pipe_1'
+    targetId: surfaceId || 'scrap_pipe_1'
   });
 
   emitSessionEvent(io, session, 'phobia:emf-pulse', {
@@ -793,7 +1104,7 @@ function triggerInteraction(ghost, session, io, targetProp) {
   // Fingerprint check
   if (ghost.hasEvidence('fingerprints')) {
     emitSessionEvent(io, session, 'phobia:uv-fingerprint', {
-      surfaceId: targetProp?.id || 'door_mazsahaz_entry',
+      surfaceId: surfaceId || 'door_mazsahaz_entry',
       expiresIn: 60
     });
   }
@@ -804,7 +1115,7 @@ function checkBreakerSabotage(ghost, session, io) {
   if (session.breakerOn === false) return; // Already off
 
   const sabotageProb = ghost.type?.breakerSabotageProb || 0.15;
-  if (Math.random() < sabotageProb) {
+  if (rngOf(ghost)() < sabotageProb) {
     session.breakerOn = false;
     emitSessionEvent(io, session, 'phobia:breaker-state', {
       breakerOn: false,
@@ -815,37 +1126,135 @@ function checkBreakerSabotage(ghost, session, io) {
   }
 }
 
-function pickNewWanderWaypoint(ghost) {
+/**
+ * Next roaming waypoint. A noisy / electronics-carrying player may attract the ghost; otherwise it
+ * stays around its favourite room and, after an excursion to another zone, always returns to it.
+ */
+function pickNewWanderWaypoint(ghost, stimulus) {
   if (!ghost) return;
+  const rng = rngOf(ghost);
+  const tells = tellsOf(ghost);
   const zones = ghost.zones || DEFAULT_ZONES;
-  const zoneList = Object.values(zones);
+  const fav = ghost.favoriteRoom;
 
-  // 65% chance waypoint in Favorite Room
-  if (Math.random() < 0.65 && ghost.favoriteRoom) {
-    const fav = ghost.favoriteRoom;
+  if (stimulus && rng() < tells.curiosity) {
+    const sc = getCoords(stimulus);
+    ghost.navTarget = { x: sc.x + (rng() - 0.5) * 4.0, y: 0, z: sc.z + (rng() - 0.5) * 4.0 };
+    return;
+  }
+
+  const others = Object.values(zones).filter((z) => z && (!fav || z.id !== fav.id));
+  const goAway = fav ? (!ghost.awayFromFav && others.length > 0 && rng() < tells.roamAwayChance) : others.length > 0;
+
+  if (!goAway && fav) {
     ghost.navTarget = {
-      x: fav.x + (Math.random() - 0.5) * 4.0,
+      x: fav.x + (rng() - 0.5) * 4.0,
       y: 0,
-      z: fav.z + (Math.random() - 0.5) * 4.0
+      z: fav.z + (rng() - 0.5) * 4.0
     };
     ghost.currentRoomId = fav.id;
+    ghost.awayFromFav = false;
   } else {
-    // 35% chance random adjacent zone
-    const randomZone = zoneList[Math.floor(Math.random() * zoneList.length)];
+    const randomZone = others[Math.floor(rng() * others.length)];
     ghost.navTarget = {
-      x: randomZone.x + (Math.random() - 0.5) * 6.0,
+      x: randomZone.x + (rng() - 0.5) * 6.0,
       y: 0,
-      z: randomZone.z + (Math.random() - 0.5) * 6.0
+      z: randomZone.z + (rng() - 0.5) * 6.0
     };
     ghost.currentRoomId = randomZone.id;
+    ghost.awayFromFav = true;
   }
 }
 
 function wanderRandomly(ghost, dt) {
-  const wanderAngle = (ghost.rot || 0) + (Math.random() - 0.5) * 0.8;
+  const wanderAngle = (ghost.rot || 0) + (rngOf(ghost)() - 0.5) * 0.8;
   ghost.rot = wanderAngle;
   ghost.x += Math.sin(wanderAngle) * (ghost.speed || 1.2) * dt;
   ghost.z += Math.cos(wanderAngle) * (ghost.speed || 1.2) * dt;
+}
+
+// Shared hunt-start roll. Returns true when the roll succeeded (the caller must stop its tick).
+function rollHunt(ghost, session, io) {
+  const avgSanity = getTeamAverageSanity(session);
+  const threshold = ghost.type?.huntThreshold || 50;
+  if (avgSanity >= threshold) return false;
+  if (ghost.lastHuntRollTime && Date.now() - ghost.lastHuntRollTime <= 20000) return false;
+  ghost.lastHuntRollTime = Date.now();
+  const huntProb = Math.min(0.95, ((threshold - avgSanity) / threshold) * 0.65 * tellsOf(ghost).huntRollMul);
+  if (rngOf(ghost)() < huntProb) {
+    startHuntInitiation(ghost, session, io);
+    return true;
+  }
+  return false;
+}
+
+// During a hunt with nobody sensed: go to the last known position, search around it, then roam.
+function huntSearchStep(ghost, dt, baseSpeed) {
+  const rng = rngOf(ghost);
+  ghost.spotSearch = null;
+  const searchPoint = () => {
+    const c = ghost.lastKnownPos;
+    ghost.navTarget = { x: c.x + (rng() - 0.5) * 8.0, y: 0, z: c.z + (rng() - 0.5) * 8.0 };
+  };
+
+  if (ghost.lastKnownPos && ghost.searchPhase === null) {
+    const dist = moveToward(ghost, ghost.lastKnownPos, dt, ghost.speed);
+    if (dist <= 1.0) {
+      ghost.searchPhase = 'search';
+      ghost.searchTimer = 6.0 + rng() * 3.0;
+      searchPoint();
+    }
+  } else if (ghost.searchPhase === 'search' && ghost.lastKnownPos) {
+    ghost.searchTimer -= dt;
+    const dist = moveToward(ghost, ghost.navTarget, dt, baseSpeed * 0.8);
+    if (dist <= 0.8) searchPoint();
+    if (ghost.searchTimer <= 0) {
+      ghost.searchPhase = 'roam';
+      ghost.lastKnownPos = null;
+      pickNewWanderWaypoint(ghost);
+    }
+  } else {
+    if (!ghost.navTarget) pickNewWanderWaypoint(ghost);
+    const dist = moveToward(ghost, ghost.navTarget, dt, baseSpeed);
+    if (dist <= 0.8) pickNewWanderWaypoint(ghost);
+  }
+}
+
+function killPlayer(ghost, target, session, io) {
+  const tc = getCoords(target);
+  const key = playerKey(target);
+  ghost.state = GHOST_STATES.KILL_SEQUENCE;
+  ghost.killTimer = 2.0;
+  ghost.victimId = key;
+  ghost.spotSearch = null;
+
+  // Mark victim
+  target.alive = false;
+  target.isSpectator = true;
+
+  // Drop held & inventory items
+  if (Array.isArray(target.inventory)) {
+    if (!session.droppedItems) session.droppedItems = [];
+    for (const item of target.inventory) {
+      if (item) {
+        session.droppedItems.push({
+          ...item,
+          x: tc.x || ghost.x,
+          y: 0.05,
+          z: tc.z || ghost.z
+        });
+      }
+    }
+    target.inventory = [];
+  }
+
+  emitSessionEvent(io, session, 'phobia:player-killed', {
+    victimId: key,
+    playerId: key,
+    userId: target.userId,
+    username: target.username,
+    jumpscareDuration: 2.0
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -855,6 +1264,9 @@ function wanderRandomly(ghost, dt) {
 function updateGhostAI(ghost, session, deltaMs, io) {
   if (!ghost) return;
   const dt = Math.max(0.001, (deltaMs || 83.33) / 1000); // delta in seconds
+  const rng = rngOf(ghost);
+
+  trackHiding(ghost, getLivingPlayers(session));
 
   // ---------------------------------------------------------
   // STATE 1: IDLE
@@ -864,30 +1276,26 @@ function updateGhostAI(ghost, session, deltaMs, io) {
     ghost.speed = 0.0;
     ghost.stateTimer -= dt;
 
-    // Check hunt roll every 20s if sanity < threshold
-    const avgSanity = getTeamAverageSanity(session);
-    const threshold = ghost.type?.huntThreshold || 50;
-
-    if (avgSanity < threshold && (!ghost.lastHuntRollTime || Date.now() - ghost.lastHuntRollTime > 20000)) {
-      ghost.lastHuntRollTime = Date.now();
-      const huntProb = ((threshold - avgSanity) / threshold) * 0.65;
-      if (Math.random() < huntProb) {
-        startHuntInitiation(ghost, session, io);
-        return;
-      }
-    }
+    if (rollHunt(ghost, session, io)) return;
 
     if (ghost.stateTimer <= 0) {
-      const roll = Math.random();
-      if (roll < 0.70) {
-        ghost.state = GHOST_STATES.WANDER;
-        ghost.stateTimer = 4.0 + Math.random() * 4.0;
-        pickNewWanderWaypoint(ghost);
-      } else if (roll < 0.90) {
+      const tells = tellsOf(ghost);
+      const living = getLivingPlayers(session);
+      const nearbyPlayers = living.filter(p => distance2D(p, ghost) <= 8.0);
+      const isShy = ghost.type?.shyness && nearbyPlayers.length > 1;
+      const stimulus = isShy ? null : findStimulus(ghost, living, tells.hearingRange);
+      // Players making noise or carrying powered devices draw interactions
+      const interactChance = Math.min(0.6, tells.interactionChance * (stimulus ? 2 : 1));
+      const roll = rng();
+      if (roll < interactChance) {
         ghost.state = GHOST_STATES.INTERACTION;
-      } else {
+      } else if (roll < interactChance + 0.10) {
         ghost.state = GHOST_STATES.IDLE;
-        ghost.stateTimer = 3.0 + Math.random() * 5.0;
+        ghost.stateTimer = 3.0 + rng() * 5.0;
+      } else {
+        ghost.state = GHOST_STATES.WANDER;
+        ghost.stateTimer = 4.0 + rng() * 4.0;
+        pickNewWanderWaypoint(ghost, stimulus);
       }
     }
   }
@@ -903,50 +1311,35 @@ function updateGhostAI(ghost, session, deltaMs, io) {
     // Periodic breaker sabotage roll
     ghost.breakerSabotageCooldown -= dt;
     if (ghost.breakerSabotageCooldown <= 0) {
-      ghost.breakerSabotageCooldown = 10.0 + Math.random() * 5.0;
+      ghost.breakerSabotageCooldown = 10.0 + rng() * 5.0;
       checkBreakerSabotage(ghost, session, io);
     }
 
-    // Waypoint movement
-    if (ghost.navTarget) {
-      const dx = ghost.navTarget.x - ghost.x;
-      const dz = ghost.navTarget.z - ghost.z;
-      const dist = Math.sqrt(dx * dx + dz * dz);
-      if (dist > 0.5) {
-        const step = Math.min(dist, ghost.speed * dt);
-        ghost.x += (dx / dist) * step;
-        ghost.z += (dz / dist) * step;
-        ghost.rot = Math.atan2(dx, dz);
-      } else {
-        pickNewWanderWaypoint(ghost);
-      }
-    }
-
-    // Check hunt roll
-    const avgSanity = getTeamAverageSanity(session);
-    const threshold = ghost.type?.huntThreshold || 50;
-    if (avgSanity < threshold && (!ghost.lastHuntRollTime || Date.now() - ghost.lastHuntRollTime > 20000)) {
-      ghost.lastHuntRollTime = Date.now();
-      const huntProb = ((threshold - avgSanity) / threshold) * 0.65;
-      if (Math.random() < huntProb) {
-        startHuntInitiation(ghost, session, io);
-        return;
-      }
-    }
-
-    // Shyness perk for Sárközi Géza: suppresses ghost events when players group
+    const tells = tellsOf(ghost);
     const living = getLivingPlayers(session);
     const nearbyPlayers = living.filter(p => distance2D(p, ghost) <= 8.0);
+    // Shyness perk for Sárközi Géza: suppresses ghost events when players group
     const isShy = ghost.type?.shyness && nearbyPlayers.length > 1;
+    const stimulus = isShy ? null : findStimulus(ghost, living, tells.hearingRange);
 
-    if (!isShy && avgSanity < 75 && Math.random() < 0.005 * dt) {
+    // Waypoint movement
+    if (ghost.navTarget) {
+      const dist = moveToward(ghost, ghost.navTarget, dt, ghost.speed);
+      if (dist <= 0.5) pickNewWanderWaypoint(ghost, stimulus);
+    }
+
+    if (rollHunt(ghost, session, io)) return;
+
+    const avgSanity = getTeamAverageSanity(session);
+    const eventRate = 0.005 * tells.eventMul * (stimulus ? 3 : 1);
+    if (!isShy && avgSanity < 75 && rng() < eventRate * dt) {
       triggerGhostEvent(ghost, session, io);
       return;
     }
 
     if (ghost.stateTimer <= 0) {
       ghost.state = GHOST_STATES.IDLE;
-      ghost.stateTimer = 3.0 + Math.random() * 5.0;
+      ghost.stateTimer = 3.0 + rng() * 5.0;
     }
   }
 
@@ -956,7 +1349,7 @@ function updateGhostAI(ghost, session, deltaMs, io) {
   else if (ghost.state === GHOST_STATES.INTERACTION) {
     triggerInteraction(ghost, session, io, null);
     ghost.state = GHOST_STATES.WANDER;
-    ghost.stateTimer = 3.0 + Math.random() * 4.0;
+    ghost.stateTimer = 3.0 + rng() * 4.0;
     pickNewWanderWaypoint(ghost);
   }
 
@@ -965,12 +1358,12 @@ function updateGhostAI(ghost, session, deltaMs, io) {
   // ---------------------------------------------------------
   else if (ghost.state === GHOST_STATES.GHOST_EVENT) {
     ghost.eventTimer -= dt;
-    ghost.visible = true;
+    ghost.visible = ghost.eventVisible !== false;
     ghost.speed = 0.0;
     if (ghost.eventTimer <= 0) {
       ghost.visible = false;
       ghost.state = GHOST_STATES.IDLE;
-      ghost.stateTimer = 3.0 + Math.random() * 3.0;
+      ghost.stateTimer = 3.0 + rng() * 3.0;
     }
   }
 
@@ -993,8 +1386,15 @@ function updateGhostAI(ghost, session, deltaMs, io) {
       ghost.huntDuration = ghost.huntMaxDuration || 35.0;
       ghost.visible = true;
       ghost.losTime = 0.0;
-      const inFreezing = isFreezingZone(ghost);
-      ghost.speed = (ghost.type?.freezingSpeedBoost && inFreezing) ? 2.2 : 1.7;
+      ghost.speed = (ghost.type?.freezingSpeedBoost && isFreezingType(ghost)) ? 2.2 : 1.7;
+
+      // The ghost heads for where a random exposed player stands when the hunt begins
+      const exposed = getLivingPlayers(session).filter((p) => !p.isInsideTruck && !isHiddenPlayer(p));
+      const first = exposed.length ? exposed[Math.floor(rng() * exposed.length)] : null;
+      const fc = first ? getCoords(first) : null;
+      ghost.lastKnownPos = fc ? { x: fc.x, z: fc.z } : null;
+      ghost.searchPhase = null;
+      ghost.spotSearch = null;
 
       emitSessionEvent(io, session, 'phobia:hunt-started', {
         duration: ghost.huntDuration,
@@ -1014,6 +1414,7 @@ function updateGhostAI(ghost, session, deltaMs, io) {
       }
     }
     ghost.huntDuration -= dt;
+    ghost.huntClock = (ghost.huntClock || 0) + dt;
     ghost.visible = true;
 
     // Check hunt expiration
@@ -1054,26 +1455,27 @@ function updateGhostAI(ghost, session, deltaMs, io) {
       return;
     }
 
-    // Hidden players (lockers / trunks) and players inside the truck safe zone cannot be hunted
-    const huntable = living.filter((p) => !p.hidden && !p.isInsideTruck);
+    // Players inside the truck safe zone cannot be hunted; hidden players are filtered by the sensors
+    const huntable = living.filter((p) => !p.isInsideTruck);
 
-    // Sensor evaluation (Line-of-Sight, Flashlight, Voice/Mic)
+    // Sensor evaluation (Line-of-Sight, Flashlight, Voice/Mic, saw-them-hide)
     const sensorResult = evaluateGhostSensors(ghost, huntable);
-    const targetKey = (t) => (t ? (t.id ?? t.socketId ?? t.userId ?? null) : null);
-    ghost.targetPlayerId = targetKey(sensorResult.target);
+    ghost.targetPlayerId = playerKey(sensorResult.target);
     ghost.hasLOS = sensorResult.hasLOS;
+
+    // Speed acceleration formulas:
+    // Standard: 1.7 m/s to 2.8 m/s with 0.15 m/s^2 acceleration under LOS
+    // Kolompár Kálmán in freezing: 2.2 m/s to 3.3 m/s with 0.18 m/s^2
+    const boosted = Boolean(ghost.type?.freezingSpeedBoost) && isFreezingType(ghost);
+    const baseSpeed = boosted ? 2.2 : 1.7;
+    const maxSpeed = boosted ? 3.3 : 2.8;
+    const accelRate = boosted ? 0.18 : 0.15;
 
     if (sensorResult.target) {
       const target = sensorResult.target;
-      const inFreezing = isFreezingZone(ghost);
-      const isKolompar = ghost.type?.id === 'kolompar_kalman';
-
-      // Speed acceleration formulas:
-      // Standard: 1.7 m/s to 2.8 m/s with 0.15 m/s^2 acceleration under LOS
-      // Kolompár Kálmán in freezing: 2.2 m/s to 3.3 m/s with 0.18 m/s^2
-      const baseSpeed = (isKolompar && inFreezing) ? 2.2 : 1.7;
-      const maxSpeed = (isKolompar && inFreezing) ? 3.3 : 2.8;
-      const accelRate = (isKolompar && inFreezing) ? 0.18 : 0.15;
+      const tc = getCoords(target);
+      ghost.lastKnownPos = { x: tc.x, z: tc.z };
+      ghost.searchPhase = null;
 
       if (ghost.hasLOS) {
         ghost.losTime += dt;
@@ -1083,55 +1485,35 @@ function updateGhostAI(ghost, session, deltaMs, io) {
         ghost.speed = Math.max(baseSpeed, ghost.speed - 0.10 * dt);
       }
 
-      // Move towards target
-      const tc = getCoords(target);
-      const dx = tc.x - ghost.x;
-      const dz = tc.z - ghost.z;
-      const dist = Math.sqrt(dx * dx + dz * dz);
-
-      if (dist > 0.001) {
-        const step = Math.min(dist, ghost.speed * dt);
-        ghost.x += (dx / dist) * step;
-        ghost.z += (dz / dist) * step;
-        ghost.rot = Math.atan2(dx, dz);
-      }
-
-      // Kill trigger: touches player within 0.8m
-      if (dist <= 0.8) {
-        ghost.state = GHOST_STATES.KILL_SEQUENCE;
-        ghost.killTimer = 2.0;
-        ghost.victimId = targetKey(target);
-
-        // Mark victim
-        target.alive = false;
-        target.isSpectator = true;
-
-        // Drop held & inventory items
-        if (Array.isArray(target.inventory)) {
-          if (!session.droppedItems) session.droppedItems = [];
-          for (const item of target.inventory) {
-            if (item) {
-              session.droppedItems.push({
-                ...item,
-                x: tc.x || ghost.x,
-                y: 0.05,
-                z: tc.z || ghost.z
-              });
-            }
+      if (isHiddenPlayer(target)) {
+        // Walk to the spot, then search it: only a small chance per second to actually find the player
+        const dist = moveToward(ghost, tc, dt, ghost.speed, 1.0);
+        if (dist <= 1.3) {
+          const key = playerKey(target);
+          if (!ghost.spotSearch || ghost.spotSearch.id !== key) ghost.spotSearch = { id: key, t: 0 };
+          ghost.spotSearch.t += dt;
+          const findChance = 1 - Math.pow(1 - tellsOf(ghost).huntFindChance, dt);
+          if (rng() < findChance) {
+            killPlayer(ghost, target, session, io);
+          } else if (ghost.spotSearch.t >= SPOT_SEARCH_TIME) {
+            ghost.searchedUntil[key] = ghost.huntClock + SPOT_REJECT_TIME;
+            target.seenEnteringHide = false;
+            ghost.spotSearch = null;
+            ghost.lastKnownPos = null;
+            ghost.searchPhase = 'roam';
+            pickNewWanderWaypoint(ghost);
           }
-          target.inventory = [];
         }
-
-        emitSessionEvent(io, session, 'phobia:player-killed', {
-          victimId: targetKey(target),
-          playerId: targetKey(target),
-          userId: target.userId,
-          username: target.username,
-          jumpscareDuration: 2.0
-        });
+      } else {
+        ghost.spotSearch = null;
+        const dist = moveToward(ghost, tc, dt, ghost.speed);
+        // Kill trigger: touches player within 0.8m
+        if (dist <= 0.8) killPlayer(ghost, target, session, io);
       }
     } else {
-      wanderRandomly(ghost, dt);
+      ghost.losTime = Math.max(0, ghost.losTime - dt);
+      ghost.speed = Math.max(baseSpeed, ghost.speed - 0.10 * dt);
+      huntSearchStep(ghost, dt, baseSpeed);
     }
   }
 
@@ -1151,6 +1533,8 @@ function updateGhostAI(ghost, session, deltaMs, io) {
         ghost.targetPlayerId = null;
         ghost.losTime = 0.0;
         ghost.speed = 1.7;
+        ghost.lastKnownPos = null;
+        ghost.searchPhase = 'roam';
       } else {
         // All players dead: defeat
         ghost.state = GHOST_STATES.POST_HUNT_COOLDOWN;
@@ -1181,7 +1565,7 @@ function updateGhostAI(ghost, session, deltaMs, io) {
     }
     if (ghost.cooldownTimer <= 0) {
       ghost.state = GHOST_STATES.IDLE;
-      ghost.stateTimer = 3.0 + Math.random() * 5.0;
+      ghost.stateTimer = 3.0 + rng() * 5.0;
     }
   }
 }
@@ -1192,6 +1576,7 @@ function updateGhostAI(ghost, session, deltaMs, io) {
 
 module.exports = {
   createGhostAI,
+  pickActiveEvidence,
   updateGhostAI,
   checkCrucifixDefense,
   applySmudgeSticks,

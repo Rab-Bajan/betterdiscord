@@ -26,12 +26,13 @@ const TRUCK_BOUNDS = { x: [-9, 1], z: [-20, -10] };
 const PICKUP_RANGE = 3.0;
 const DROP_RANGE = 3.0;
 const THROW_RANGE = 6.0;
+const MOVED_RANGE = 45.0; // eldobott tárgy legfeljebb ennyire állhat meg a játékostól
 const MAX_THROW_SPEED = 20;
 const RATE_LIMIT_PER_SEC = 240;
 const SAFE_ID = new Set(['__proto__', 'constructor', 'prototype']);
 const PHOBIA_STR_FIELDS = {
   roomId: 64, channelId: 64, channel: 64, itemId: 64, doorId: 64, lightId: 64, propId: 64,
-  userId: 128, username: 64, avatarColor: 16, ghostGuess: 80, ghostName: 80, ghostType: 80, currentZone: 32
+  spotId: 64, userId: 128, username: 64, avatarColor: 16, ghostGuess: 80, ghostName: 80, ghostType: 80, currentZone: 32
 };
 
 // 7 Miskolc Folklore Ghost Archetypes & Evidence Combinations
@@ -379,11 +380,89 @@ function clampNum(v, [lo, hi]) {
   return Math.min(hi, Math.max(lo, v));
 }
 
+
+// Rejtekhelyek (ScrapYardMap.js: fémszekrények és roncsautó csomagtartók), szerveroldali tábla
+const HIDING_RANGE = 3.0;
+const HIDING_SPOTS = {
+  mazsahaz_locker_1: { x: 16.5, z: 3.5, type: 'locker' },
+  mazsahaz_locker_2: { x: 16.5, z: 5.0, type: 'locker' },
+  hangar_locker_1: { x: -3.5, z: 24.5, type: 'locker' },
+  hangar_locker_2: { x: -3.5, z: 26.0, type: 'locker' },
+  car_trunk_1: { x: -18.0, z: 8.5, type: 'car_trunk' },
+  car_trunk_2: { x: -14.0, z: 15.5, type: 'car_trunk' },
+  car_trunk_3: { x: -21.0, z: 21.0, type: 'car_trunk' }
+};
+
+// Munkamenet-beállítások
+const DEFAULT_SETTINGS = { evidenceCount: 3, startingSanity: 100 };
+function sanitizeSettings(raw, base = DEFAULT_SETTINGS) {
+  const out = { evidenceCount: base.evidenceCount, startingSanity: base.startingSanity };
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  if (Object.hasOwn(raw, 'evidenceCount')) {
+    const n = Number(raw.evidenceCount);
+    if (Number.isFinite(n)) out.evidenceCount = Math.min(3, Math.max(1, Math.round(n)));
+  }
+  if (Object.hasOwn(raw, 'startingSanity')) {
+    const n = Number(raw.startingSanity);
+    if (Number.isFinite(n)) out.startingSanity = Math.min(100, Math.max(0, Math.round(n)));
+  }
+  return out;
+}
+
+// Rack azonosítók (kliens) -> polc típus (szerver)
+const RACK_ALIASES = {
+  uv_flashlight: 'uv_light', uv: 'uv_light', emf: 'emf_reader', spiritbox: 'spirit_box',
+  writing_book: 'ghost_writing_book', book: 'ghost_writing_book', palinka_flask: 'sanity_palinka', palinka: 'sanity_palinka',
+  dots: 'dots_projector', smudge: 'smudge_sticks', crucifix: 'mobile_jesus', jesus: 'mobile_jesus',
+  camera: 'photo_camera', thermo: 'thermometer'
+};
+function normalizeItemKey(id) {
+  const base = String(id).toLowerCase().replace(/_\d+$/, '');
+  return RACK_ALIASES[base] || base;
+}
+function findShelfIndex(shelf, itemId) {
+  const exact = shelf.findIndex((i) => i.id === itemId);
+  if (exact !== -1) return exact;
+  const key = normalizeItemKey(itemId);
+  return shelf.findIndex((i) => normalizeItemKey(i.id) === key || i.type === key);
+}
+
+// Célok: a szerver generálja és észleli (id = észlelési kulcs)
+const OBJECTIVE_POOL = [
+  { id: 'emf_5', textHu: 'Mérj EMF 5-ös szintet', rewardFt: 500 },
+  { id: 'photo_ghost', textHu: 'Fotózd le a szellemet', rewardFt: 600 },
+  { id: 'smudge_ghost', textHu: 'Füstölj a szellem közelében', rewardFt: 400 },
+  { id: 'freezing_temp', textHu: 'Mérj fagypont alatti hőmérsékletet', rewardFt: 500 },
+  { id: 'ghost_event', textHu: 'Légy szemtanúja egy szellemi eseménynek', rewardFt: 400 },
+  { id: 'survive_hunt', textHu: 'Élj túl egy vadászatot', rewardFt: 700 },
+  { id: 'crucifix_block', textHu: 'Háríts el egy vadászatot a Mobil Jézussal', rewardFt: 750 },
+  { id: 'low_sanity', textHu: 'A csapat átlagos elmeállapota essen 25% alá', rewardFt: 500 },
+  { id: 'drink_palinka', textHu: 'Idd meg a pálinkát', rewardFt: 300 },
+  { id: 'ghost_writing', textHu: 'Szerezz szellemfirkát a könyvbe', rewardFt: 500 }
+];
+function generateObjectives(count = 3, rng = Math.random) {
+  const pool = OBJECTIVE_POOL.slice();
+  const out = [];
+  while (out.length < count && pool.length) {
+    const [o] = pool.splice(Math.floor(rng() * pool.length), 1);
+    out.push({ id: o.id, textHu: o.textHu, done: false, rewardFt: o.rewardFt });
+  }
+  return out;
+}
+
+const worldItemView = (it) => ({
+  id: it.id, type: it.type, x: it.x, y: it.y, z: it.z,
+  rx: it.rx || 0, ry: it.ry || 0, rz: it.rz || 0
+});
+
 class PhobiaSession {
   constructor(roomId, options = {}) {
     this.roomId = roomId;
     this.matchId = options.matchId || `phobia_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
-    this.status = 'active'; // 'staging' | 'active' | 'hunting' | 'concluded'
+    this.lobby = options.lobby === true;
+    this.status = this.lobby ? 'lobby' : 'active'; // 'lobby' | 'staging' | 'active' | 'hunting' | 'concluded'
+    this.settings = sanitizeSettings(options.settings);
+    this.hostSocketId = options.starterSocketId || null;
     this.location = 'A MÉH Telep (Miskolc)';
     this.difficulty = options.difficulty || 'Amateur';
     this.createdAt = Date.now();
@@ -418,6 +497,8 @@ class PhobiaSession {
       { id: 'crucifix_block', desc: 'Háríts el egy vadászatot a Mobil Jézussal', reward: 750, completed: false }
     ];
     this.completedSideTasks = new Set();
+    this.primaryObjective = { textHu: 'Azonosítsd a szellem típusát', done: false };
+    this.objectives = generateObjectives(3);
     this.photoBounties = []; // Registered photo evidence
 
     // Last time tick was evaluated
@@ -429,7 +510,7 @@ class PhobiaSession {
     try { ai = require('./miskolcPhobiaAI'); } catch (e) {}
     if (ai && typeof ai.createGhostAI === 'function') {
       try {
-        const extGhost = ai.createGhostAI(archetype.type, { x: 5.0, y: 0.0, z: 8.0 });
+        const extGhost = ai.createGhostAI(archetype.type, { x: 5.0, y: 0.0, z: 8.0 }, { evidenceCount: this.settings.evidenceCount });
         if (extGhost) {
           extGhost.name = extGhost.type?.name || extGhost.name || archetype.type;
           extGhost.typeName = extGhost.type?.name || archetype.type;
@@ -445,12 +526,19 @@ class PhobiaSession {
       } catch (err) {}
     }
 
+    let activeEvidence = [...archetype.evidence];
+    try {
+      const aiMod = require('./miskolcPhobiaAI');
+      if (aiMod && typeof aiMod.pickActiveEvidence === 'function') activeEvidence = aiMod.pickActiveEvidence(archetype.evidence, this.settings.evidenceCount);
+    } catch (e) {}
     return {
       id: `ghost_${this.matchId}`,
+      activeEvidence,
       name: archetype.type,
       type: archetype.type,
       archetype: archetype.archetype,
       evidence: [...archetype.evidence],
+      hasEvidence(ev) { return this.activeEvidence.includes(ev) || (!!this.fakeEvidence && ev === this.fakeEvidence); },
       fakeEvidence: archetype.fakeEvidence || null,
       favoriteRoom: archetype.favoriteRoom || 'zone1_mazsahaz',
       favoriteCoords: { x: 5.0, y: 0.0, z: 8.0 }, // Zone 1 Mázsaház
@@ -482,7 +570,8 @@ class PhobiaSession {
       sprinting: false,
       isSpeaking: false,
       flashlightOn: true,
-      sanity: 100.0, // 0 to 100%
+      sanity: this.settings.startingSanity, // 0 to 100%
+      hidingSpotId: null,
       alive: true,
       currentZone: 'truck',
       isInsideTruck: true,
@@ -516,11 +605,13 @@ class PhobiaSession {
       channelId: this.roomId,
       matchId: this.matchId,
       status: this.status,
+      settings: this.settings,
+      hostSocketId: this.hostSocketId,
       active: this.status !== 'concluded',
       startedBy: this.startedBy || null,
       graceTimer: Math.max(0, Math.round(this.gracePeriodRemaining)),
       gateOpen: this.gateOpen,
-      lights: Object.fromEntries(Object.entries(this.lights).map(([k, v]) => [k, { x: v.x, y: v.y, z: v.z, zone: v.zone, shattered: v.shattered }])),
+      lights: Object.fromEntries(Object.entries(this.lights).map(([k, v]) => [k, { x: v.x, y: v.y, z: v.z, zone: v.zone, shattered: v.shattered, state: !!v.state }])),
       location: this.location,
       difficulty: this.difficulty,
       graceRemaining: Math.max(0, Math.round(this.gracePeriodRemaining)),
@@ -529,6 +620,9 @@ class PhobiaSession {
       doors: Object.fromEntries(Object.entries(this.doors).map(([k, v]) => [k, { open: v.open, angle: v.angle }])),
       equipmentShelf: this.equipmentShelf,
       droppedItems: this.droppedItems,
+      scrapProps: this.scrapProps,
+      primaryObjective: this.primaryObjective,
+      objectives: this.objectives,
       playerCount: this.players.size,
       players: Array.from(this.players.values()).map((p) => ({
         id: p.socketId,
@@ -540,6 +634,8 @@ class PhobiaSession {
         rotation: p.rotation,
         sanity: Math.round(p.sanity),
         alive: p.alive,
+        hidingSpotId: p.hidingSpotId || null,
+        isSpeaking: !!p.isSpeaking,
         activeSlot: p.activeSlot,
         inventory: p.inventory
       })),
@@ -623,11 +719,63 @@ function setupMiskolcPhobia(io, users, opts = {}) {
       session.starterSocketId = options.starterSocketId || null;
       session.starterAccountId = options.starterAccountId || null;
       session.paidOut = new Set();
-      session.broadcast = (eventName, payload) => io.to(roomOf(roomId)).emit(eventName, payload);
+      session.broadcast = (eventName, payload) => {
+        detectObjectiveFromEvent(session, eventName, payload);
+        io.to(roomOf(roomId)).emit(eventName, payload);
+        if (eventName === 'phobia:item-thrown' && payload && typeof payload.itemId === 'string' && !payload.actorSocketId) emitGhostThrow(session, payload);
+      };
       sessions.set(roomId, session);
       broadcastSessionState(roomId);
     }
     return session;
+  }
+
+  // --- Célok: szerveroldali észlelés ---
+  function emitObjectives(session) {
+    io.to(roomOf(session.roomId)).emit('phobia:objectives-updated', {
+      primary: session.primaryObjective,
+      objectives: session.objectives
+    });
+  }
+
+  function completeObjective(session, id) {
+    const obj = session.objectives.find((o) => o.id === id);
+    if (!obj || obj.done) return false;
+    obj.done = true;
+    emitObjectives(session);
+    return true;
+  }
+
+  function detectObjectiveFromEvent(session, eventName, payload) {
+    if (!session || session.lobby && session.status === 'lobby') return;
+    switch (eventName) {
+      case 'phobia:emf-reading':
+        if (payload && payload.level >= 5) completeObjective(session, 'emf_5');
+        break;
+      case 'phobia:ghost-event': completeObjective(session, 'ghost_event'); break;
+      case 'phobia:ghost-writing': completeObjective(session, 'ghost_writing'); break;
+      case 'phobia:hunt-cancelled':
+        if (payload && payload.reason === 'crucifix') completeObjective(session, 'crucifix_block');
+        break;
+      case 'phobia:hunt-started':
+        session.huntAliveAtStart = Array.from(session.players.values()).filter((p) => p.alive).map((p) => p.socketId);
+        break;
+      case 'phobia:hunt-ended': {
+        const start = session.huntAliveAtStart || [];
+        const survivors = start.filter((sid) => session.players.get(sid)?.alive);
+        if (survivors.length > 0) completeObjective(session, 'survive_hunt');
+        session.huntAliveAtStart = null;
+        break;
+      }
+      default: break;
+    }
+  }
+
+  // Szellem dobás: a szerver tárolt transzformját és a világ-esemény küldése (a tényleges nyugvó pozíciót a kliensek item-moved-dal jelzik)
+  function emitGhostThrow(session, payload) {
+    const it = session.scrapProps.find((p) => p.id === payload.itemId) || session.droppedItems.find((i) => i.id === payload.itemId);
+    if (!it) return;
+    io.to(roomOf(session.roomId)).emit('phobia:world-item-updated', { action: 'moved', item: worldItemView(it), actorSocketId: null, impulse: payload.impulse });
   }
 
   // Kilépés a játékból (nézetváltás / bezárás): a játékos eltávolítása, üres munkamenet törlése
@@ -639,6 +787,9 @@ function setupMiskolcPhobia(io, users, opts = {}) {
     io.to(roomOf(roomId)).emit('phobia:player-left', { socketId: socket.id, username: removed?.username });
     if (session.players.size === 0) {
       sessions.delete(roomId);
+    } else if (session.hostSocketId === socket.id) {
+      session.hostSocketId = session.players.keys().next().value;
+      io.to(roomOf(roomId)).emit('phobia:settings-updated', { settings: session.settings, hostSocketId: session.hostSocketId });
     }
     broadcastSessionState(roomId);
   }
@@ -665,14 +816,16 @@ function setupMiskolcPhobia(io, users, opts = {}) {
 
       session.tickCount++;
 
+      const inLobby = session.status === 'lobby';
+
       // 1. Preparation Grace Period Countdown
-      if (session.gracePeriodRemaining > 0 && session.gateOpen) {
+      if (!inLobby && session.gracePeriodRemaining > 0 && session.gateOpen) {
         session.gracePeriodRemaining -= deltaMs / 1000;
         if (session.gracePeriodRemaining < 0) session.gracePeriodRemaining = 0;
       }
 
       // 2. Sanity Drain Simulation
-      for (const player of session.players.values()) {
+      for (const player of inLobby ? [] : session.players.values()) {
         if (!player.alive) continue;
 
         // Inside truck is safe; no passive drain
@@ -698,7 +851,9 @@ function setupMiskolcPhobia(io, users, opts = {}) {
       if (!ai) {
         try { ai = phobiaAI = require('./miskolcPhobiaAI'); } catch (e) {}
       }
-      if (ai && typeof ai.updateGhostAI === 'function') {
+      if (inLobby) {
+        // Előszoba: nincs szellem-MI, vadászat és józanság-fogyás
+      } else if (ai && typeof ai.updateGhostAI === 'function') {
         try {
           ai.updateGhostAI(session.ghost, session, deltaMs, io);
         } catch (err) {
@@ -706,6 +861,11 @@ function setupMiskolcPhobia(io, users, opts = {}) {
         }
       } else {
         updateInternalGhostAI(session, deltaMs);
+      }
+
+      if (!inLobby) {
+        const alive = Array.from(session.players.values()).filter((p) => p.alive);
+        if (alive.length && alive.reduce((a, p) => a + p.sanity, 0) / alive.length < 25) completeObjective(session, 'low_sanity');
       }
 
       // 4. Broadcast 12 Hz State Delta
@@ -749,6 +909,7 @@ function setupMiskolcPhobia(io, users, opts = {}) {
           crouched: p.crouched,
           sprinting: p.sprinting,
           alive: p.alive,
+          hidingSpotId: p.hidingSpotId || null,
           activeSlot: p.activeSlot
         }))
       };
@@ -814,7 +975,7 @@ function setupMiskolcPhobia(io, users, opts = {}) {
           if (task) task.completed = true;
 
           // Emit cancellation & burn events
-          io.to(roomOf(session.roomId)).emit('phobia:hunt-cancelled', {
+          session.broadcast('phobia:hunt-cancelled', {
             reason: 'crucifix',
             jesusId: jesus.id,
             chargesRemaining: jesus.charges
@@ -876,7 +1037,7 @@ function setupMiskolcPhobia(io, users, opts = {}) {
           ghost.state = 'ACTIVE_HUNT_CHASE';
           ghost.huntActive = true;
           ghost.huntTimer = 25000;
-          io.to(roomOf(session.roomId)).emit('phobia:hunt-started', {
+          session.broadcast('phobia:hunt-started', {
             duration: 25,
             ghostId: ghost.id,
             ghostType: ghost.type
@@ -933,7 +1094,7 @@ function setupMiskolcPhobia(io, users, opts = {}) {
           ghost.state = 'POST_HUNT_COOLDOWN';
           ghost.stateTimer = 20000;
           ghost.visible = false;
-          io.to(roomOf(session.roomId)).emit('phobia:hunt-ended', { ghostId: ghost.id });
+          session.broadcast('phobia:hunt-ended', { ghostId: ghost.id });
         }
         break;
 
@@ -1006,6 +1167,8 @@ function setupMiskolcPhobia(io, users, opts = {}) {
       const newMatch = !!data.newMatch && (!existing || existing.players.size === 0 || existing.players.has(socket.id));
       const session = getOrCreateSession(room, {
         difficulty: diff,
+        lobby: data.lobby === true,
+        settings: data.settings,
         newMatch,
         startedBy: sanitizeUsername(rawName) || null,
         starterSocketId: socket.id,
@@ -1122,7 +1285,7 @@ function setupMiskolcPhobia(io, users, opts = {}) {
       }
       if (typeof crouched === 'boolean') player.crouched = crouched;
       if (typeof sprinting === 'boolean') player.sprinting = sprinting;
-      if (typeof hidden === 'boolean') player.hidden = hidden;
+      if (typeof hidden === 'boolean') player.hidden = hidden || !!player.hidingSpotId;
       // A teherautóban tartózkodás a szerver által ismert zónából / pozícióból származik
       if (typeof isInsideTruck === 'boolean') {
         const px = player.position[0];
@@ -1131,6 +1294,68 @@ function setupMiskolcPhobia(io, users, opts = {}) {
         player.isInsideTruck = isInsideTruck && inTruckBounds;
       }
       if (typeof currentZone === 'string' && Object.hasOwn(MAP_ZONES, currentZone)) player.currentZone = currentZone;
+      // Elhagyta a rejtekhelyet: a rejtőzés megszűnik
+      if (player.hidingSpotId) {
+        const spot = HIDING_SPOTS[player.hidingSpotId];
+        if (!spot || Math.hypot(spot.x - player.position[0], spot.z - player.position[2]) > HIDING_RANGE) {
+          const left = player.hidingSpotId;
+          player.hidingSpotId = null;
+          player.hidden = false;
+          io.to(roomOf(roomId)).emit('phobia:player-hide', { socketId: socket.id, spotId: left, hidden: false });
+        }
+      }
+    });
+
+    // Rejtőzés: szerveroldali rejtekhely-tábla, élő játékos, 3 m-en belül
+    socket.on('phobia:hide', ({ roomId, spotId, hidden } = {}) => {
+      const session = memberSession(socket, roomId);
+      if (!session || session.status === 'lobby' || session.status === 'concluded') return;
+      const player = session.players.get(socket.id);
+      if (!player || !player.alive || typeof hidden !== 'boolean') return;
+      if (typeof spotId !== 'string' || SAFE_ID.has(spotId) || !Object.hasOwn(HIDING_SPOTS, spotId)) return;
+      const spot = HIDING_SPOTS[spotId];
+      if (hidden) {
+        if (Math.hypot(spot.x - player.position[0], spot.z - player.position[2]) > HIDING_RANGE) return;
+        for (const other of session.players.values()) {
+          if (other !== player && other.hidingSpotId === spotId) return;
+        }
+        player.hidingSpotId = spotId;
+        player.hidden = true;
+      } else {
+        if (player.hidingSpotId !== spotId) return;
+        player.hidingSpotId = null;
+        player.hidden = false;
+      }
+      player.seenEnteringHide = false;
+      io.to(roomOf(roomId)).emit('phobia:player-hide', { socketId: socket.id, spotId, hidden });
+    });
+
+    // Előszoba: beállítások (csak házigazda) és meccs indítás
+    socket.on('phobia:update-settings', ({ roomId, settings } = {}) => {
+      const session = memberSession(socket, roomId);
+      if (!session || session.status !== 'lobby' || session.hostSocketId !== socket.id) return;
+      if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return;
+      session.settings = sanitizeSettings(settings, session.settings);
+      io.to(roomOf(roomId)).emit('phobia:settings-updated', { settings: session.settings, hostSocketId: session.hostSocketId });
+      broadcastSessionState(roomId);
+    });
+
+    socket.on('phobia:start-match', ({ roomId } = {}) => {
+      const session = memberSession(socket, roomId);
+      if (!session || session.status !== 'lobby' || session.hostSocketId !== socket.id) return;
+      session.status = 'active';
+      session.lastTickTime = Date.now();
+      session.ghost = session.initGhost(session.ghostArchetype);
+      for (const p of session.players.values()) p.sanity = session.settings.startingSanity;
+      for (const [sid, p] of session.players) {
+        io.to(sid).emit('phobia:session-init', {
+          session: session.getPublicSummary(),
+          self: p,
+          profile: store.getOrCreateProfile(p.userId)
+        });
+      }
+      emitObjectives(session);
+      broadcastSessionState(roomId);
     });
 
     // 3. Item Pickup & Drop
@@ -1150,7 +1375,7 @@ function setupMiskolcPhobia(io, users, opts = {}) {
       };
 
       // Check equipment shelf first
-      let itemIndex = session.equipmentShelf.findIndex((i) => i.id === itemId);
+      let itemIndex = findShelfIndex(session.equipmentShelf, itemId);
       let pickedItem = null;
       if (itemIndex !== -1) {
         if (!inRange(session.equipmentShelf[itemIndex])) return;
@@ -1161,6 +1386,7 @@ function setupMiskolcPhobia(io, users, opts = {}) {
         if (itemIndex !== -1) {
           if (!inRange(session.droppedItems[itemIndex])) return;
           pickedItem = session.droppedItems.splice(itemIndex, 1)[0];
+          io.to(roomOf(roomId)).emit('phobia:world-item-updated', { action: 'removed', item: worldItemView(pickedItem), actorSocketId: socket.id });
         }
       }
 
@@ -1172,6 +1398,7 @@ function setupMiskolcPhobia(io, users, opts = {}) {
           oldItem.y = 0.1;
           oldItem.z = player.position[2];
           session.droppedItems.push(oldItem);
+          io.to(roomOf(roomId)).emit('phobia:world-item-updated', { action: 'spawned', item: worldItemView(oldItem), actorSocketId: socket.id });
         }
 
         player.inventory[slot] = pickedItem;
@@ -1208,6 +1435,7 @@ function setupMiskolcPhobia(io, users, opts = {}) {
       droppedItem.z = near(z, player.position[2], DROP_RANGE);
 
       session.droppedItems.push(droppedItem);
+      io.to(roomOf(roomId)).emit('phobia:world-item-updated', { action: 'spawned', item: worldItemView(droppedItem), actorSocketId: socket.id });
 
       socket.emit('phobia:item-dropped', { slot, item: droppedItem, inventory: player.inventory });
       socket.emit('phobia:inventory-updated', { inventory: player.inventory });
@@ -1253,6 +1481,31 @@ function setupMiskolcPhobia(io, users, opts = {}) {
         z: near(position.z, player.position[2], THROW_RANGE),
         impulse: [velocity.x * k, velocity.y * k, velocity.z * k]
       });
+    });
+
+    // Nyugalomba került eldobott / eldobott tárgy: a szerver tárolja az utolsó transzformot (késői csatlakozóknak)
+    let lastMovedAt = 0;
+    socket.on('phobia:item-moved', ({ roomId, itemId, position, rotation } = {}) => {
+      const session = memberSession(socket, roomId);
+      if (!session || session.status === 'lobby') return;
+      const player = session.players.get(socket.id);
+      if (!player || player.alive === false) return;
+      if (typeof itemId !== 'string' || itemId.length === 0 || itemId.length > PHOBIA_STR_FIELDS.itemId || SAFE_ID.has(itemId)) return;
+      const isVec = (v) => v && typeof v === 'object' && ['x', 'y', 'z'].every((k) => typeof v[k] === 'number' && Number.isFinite(v[k]));
+      if (!isVec(position) || !isVec(rotation)) return;
+      const item = session.droppedItems.find((i) => i.id === itemId) || session.scrapProps.find((p) => p.id === itemId);
+      if (!item) return;
+      const now = Date.now();
+      if (now - lastMovedAt < 20) return;
+      lastMovedAt = now;
+      const px = clampNum(position.x, MAP_BOUNDS.x);
+      const pz = clampNum(position.z, MAP_BOUNDS.z);
+      if (Math.hypot(px - player.position[0], pz - player.position[2]) > MOVED_RANGE) return;
+      item.x = px;
+      item.y = clampNum(position.y, MAP_BOUNDS.y);
+      item.z = pz;
+      item.rx = rotation.x; item.ry = rotation.y; item.rz = rotation.z;
+      io.to(roomOf(roomId)).emit('phobia:world-item-updated', { action: 'moved', item: worldItemView(item), actorSocketId: socket.id });
     });
 
     // 4. Interactive Doors & Gates
@@ -1350,6 +1603,7 @@ function setupMiskolcPhobia(io, users, opts = {}) {
       }
 
       player.sanity = Math.min(100.0, player.sanity + 35.0);
+      completeObjective(session, 'drink_palinka');
 
       socket.emit('phobia:inventory-updated', { inventory: player.inventory });
       io.to(roomOf(roomId)).emit('phobia:sanity-updated', {
@@ -1395,6 +1649,13 @@ function setupMiskolcPhobia(io, users, opts = {}) {
         ghost.smudgeBlindedTimer = 5.0;
         ghost.huntBlockedBySmudgeUntil = Date.now() + roamDelay * 1000;
         result = { blinded: true, duration: 5.0, roamDelay };
+      }
+
+      const sg = session.ghost;
+      const sgx = typeof sg.x === 'number' ? sg.x : sg.position?.[0];
+      const sgz = typeof sg.z === 'number' ? sg.z : sg.position?.[2];
+      if (typeof sgx === 'number' && typeof sgz === 'number' && Math.hypot(sgx - player.position[0], sgz - player.position[2]) <= 8) {
+        completeObjective(session, 'smudge_ghost');
       }
 
       socket.emit('phobia:inventory-updated', { inventory: player.inventory });
@@ -1460,6 +1721,7 @@ function setupMiskolcPhobia(io, users, opts = {}) {
       session.photoBounties.push(record);
 
       if (ghostInFrame) {
+        completeObjective(session, 'photo_ghost');
         session.completedSideTasks.add('photo_ghost');
         let task = session.sideTasks.find((t) => t.id === 'photo_ghost');
         if (!task) {
@@ -1521,6 +1783,7 @@ function setupMiskolcPhobia(io, users, opts = {}) {
       if (isTestRoom && isInZone1) reading = -8.5;
 
       if (reading < 0.0) {
+        completeObjective(session, 'freezing_temp');
         session.completedSideTasks.add('freezing_temp');
         const task = session.sideTasks.find((t) => t.id === 'freezing_temp');
         if (task) task.completed = true;
@@ -1562,6 +1825,7 @@ function setupMiskolcPhobia(io, users, opts = {}) {
       const emfLevel = hasEmf5 ? 5 : 3;
 
       if (hasEmf5) {
+        completeObjective(session, 'emf_5');
         session.completedSideTasks.add('emf_5');
         const task = session.sideTasks.find((t) => t.id === 'emf_5');
         if (task) task.completed = true;
@@ -1590,7 +1854,7 @@ function setupMiskolcPhobia(io, users, opts = {}) {
     const triggerHunt = ({ roomId } = {}) => {
       if (!testHooksEnabled(roomId)) return;
       const session = memberSession(socket, roomId);
-      if (!session) return;
+      if (!session || session.status === 'lobby') return;
 
       let ai = phobiaAI;
       if (!ai) {
@@ -1601,6 +1865,7 @@ function setupMiskolcPhobia(io, users, opts = {}) {
       if (ai && typeof ai.checkCrucifixDefense === 'function') {
         const blocked = ai.checkCrucifixDefense(session.ghost, session, io);
         if (blocked) {
+          completeObjective(session, 'crucifix_block');
           session.completedSideTasks.add('crucifix_block');
           const task = session.sideTasks.find((t) => t.id === 'crucifix_block');
           if (task) task.completed = true;
@@ -1622,7 +1887,7 @@ function setupMiskolcPhobia(io, users, opts = {}) {
       const room = roomId || channelId || data?.channelId || data?.roomId;
       const guess = ghostGuess || ghostName || ghostType || data?.ghostGuess || data?.ghostName;
       const session = memberSession(socket, room);
-      if (!session || session.status === 'concluded') return;
+      if (!session || session.status === 'concluded' || session.status === 'lobby') return;
       const player = session.players.get(socket.id);
       const targetUserId = identityOf(socket, room, userId);
       if (session.paidOut.has(targetUserId)) return;
@@ -1648,19 +1913,24 @@ function setupMiskolcPhobia(io, users, opts = {}) {
       let rewardFt = 0;
       let xpGained = 50;
 
+      if (isCorrect) session.primaryObjective.done = true;
+      const objectiveFt = session.objectives.filter((o) => o.done).reduce((a, o) => a + (o.rewardFt || 0), 0);
+      const objectivesDone = session.objectives.filter((o) => o.done).length;
+
       if (isCorrect) {
         rewardFt = 2500;
         xpGained = 200;
         // Include side bonuses (guaranteeing >= 3000 Ft payout)
-        const sideCount = Math.max(1, session.completedSideTasks.size);
-        rewardFt += sideCount * 500;
-        xpGained += sideCount * 50;
+        const sideCount = session.lobby ? 0 : Math.max(1, session.completedSideTasks.size);
+        rewardFt += sideCount * 500 + objectiveFt;
+        xpGained += sideCount * 50 + objectivesDone * 25;
       } else {
-        rewardFt = 250 + (session.completedSideTasks.size * 100);
+        rewardFt = 250 + (session.lobby ? 0 : session.completedSideTasks.size * 100) + Math.floor(objectiveFt / 4);
         xpGained = 40;
       }
 
       session.status = 'concluded';
+      emitObjectives(session);
       session.paidOut.add(targetUserId);
       broadcastSessionState(session.roomId);
 
@@ -1679,6 +1949,7 @@ function setupMiskolcPhobia(io, users, opts = {}) {
         correct: isCorrect,
         ghostType: resolvedGhostName,
         ghostArchetype: ghostRole,
+        objectiveRewardFt: objectiveFt,
         rewardFt,
         xpGained,
         profile: updatedProfile,
@@ -1705,7 +1976,7 @@ function setupMiskolcPhobia(io, users, opts = {}) {
     socket.on('phobia:player-speaking', ({ roomId, isSpeaking } = {}) => {
       const session = memberSession(socket, roomId);
       if (!session) return;
-      session.players.get(socket.id).isSpeaking = !!isSpeaking;
+      session.players.get(socket.id).isSpeaking = isSpeaking === true;
     });
 
     // 14. Gate Toggle & Grace Timer Start
