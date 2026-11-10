@@ -1,5 +1,7 @@
 // Játékosonkénti delta-kódolás és látótér-szűrés. Az ellenséges entitás csak akkor kerül egy játékos tickjébe,
-// ha a csapata látóterében van.
+// ha a csapata látóterében van. A megfigyelő (kiesett játékos) mindent lát, szűrés nélkül.
+// Az álcázott kém az ellenségnek civilként ({ k: 'civilian', o: -1 }) érkezik; ha az álcázás állapota
+// egy nézőnél megfordul, a teljes rekordot újra elküldjük.
 const { TICK_HZ } = require('./content');
 
 const r2 = (v) => Math.round(v * 100) / 100;
@@ -10,7 +12,7 @@ const NODE_EVERY = 5;
 const R_EVERY = 5;
 
 function createView() {
-  return { known: new Map(), nodes: new Map(), rSig: '', rTick: -99, pSig: '', lastSend: -99 };
+  return { known: new Map(), nodes: new Map(), rSig: '', rTick: -99, pSig: '', lastSend: -99, spyOn: false, slowT: -1 };
 }
 
 const pausedSig = (p) => (p ? `${p.reason}|${p.untilMs}` : '');
@@ -33,12 +35,13 @@ function resetView(match, idx, view, snapshot) {
   view.rTick = tick;
   view.pSig = pausedSig(snapshot.paused);
   view.lastSend = tick;
+  view.spyOn = Array.isArray(snapshot.spy) && snapshot.spy.length > 0;
 }
 
 function unitRec(e, full, tick) {
   return {
     seen: tick, hp: full.hp, hpT: tick, st: full.st, c: full.c, ct: full.ct, tg: full.tg,
-    sx: full.x, sy: full.y, stx: full.tx, sty: full.ty, sv: full.v, sT: tick, stT: tick
+    sx: full.x, sy: full.y, stx: full.tx, sty: full.ty, sv: full.v, sT: tick, stT: tick, dg: full.o === -1
   };
 }
 
@@ -56,7 +59,7 @@ function eventVisible(match, ev, p) {
   if (v.all) return true;
   if (v.team !== undefined) return v.team === p.team;
   if (v.owner !== undefined) return v.owner === p.idx;
-  if (v.pos) return v.pos.some(([x, y]) => match.tileVisible(p.team, x, y));
+  if (v.pos) return !!p.spectator || v.pos.some(([x, y]) => match.tileVisible(p.team, x, y));
   return false;
 }
 
@@ -64,6 +67,7 @@ function eventVisible(match, ev, p) {
 function buildTick(match, idx, view) {
   const p = match.players[idx];
   const team = p.team;
+  const spec = !!p.spectator;
   const tick = match.tick;
   const out = { t: tick };
   let any = false;
@@ -74,10 +78,10 @@ function buildTick(match, idx, view) {
 
   for (const u of match.units.values()) {
     if (u.dead) continue;
-    if (match.players[u.o].team !== team && !match.teamVisible(team, u)) continue;
+    if (!spec && match.players[u.o].team !== team && !match.teamVisible(team, u)) continue;
     const rec = known.get(u.id);
-    const full = match.unitFull(u);
-    if (!rec) {
+    const full = match.unitFor(u, team, spec);
+    if (!rec || rec.dg !== (full.o === -1)) {
       us.push(full);
       known.set(u.id, unitRec(u, full, tick));
       continue;
@@ -103,7 +107,7 @@ function buildTick(match, idx, view) {
 
   for (const b of match.buildings.values()) {
     if (b.dead) continue;
-    if (match.players[b.o].team !== team && !match.teamVisible(team, b)) continue;
+    if (!spec && match.players[b.o].team !== team && !match.teamVisible(team, b)) continue;
     const rec = known.get(b.id);
     if (!rec) {
       bs.push(match.buildingFull(b));
@@ -128,7 +132,7 @@ function buildTick(match, idx, view) {
     const a = Math.ceil(n.a);
     const rec = view.nodes.get(n.id);
     if (rec.a === a || tick - rec.t < NODE_EVERY) continue;
-    if (!match.tileVisible(team, n.x, n.y)) continue;
+    if (!spec && !match.tileVisible(team, n.x, n.y)) continue;
     ns.push([n.id, a]);
     rec.a = a; rec.t = tick;
   }
@@ -143,6 +147,13 @@ function buildTick(match, idx, view) {
 
   const ev = [];
   for (const e of match.events) if (eventVisible(match, e, p)) ev.push(e.w);
+
+  if (tick % TICK_HZ === 0 && view.slowT !== tick) {
+    view.slowT = tick;
+    const spy = match.spyReport(idx);
+    if (spy.length || view.spyOn) { out.spy = spy; view.spyOn = spy.length > 0; any = true; }
+    if (spec) { out.sv = match.spectatorSummary(); any = true; }
+  }
 
   if (us.length) { out.u = us; any = true; }
   if (bs.length) { out.b = bs; any = true; }

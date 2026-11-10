@@ -213,7 +213,7 @@ class AiController {
     let target = null;
     let bd = Infinity;
     const consider = (e, cxx, cyy, bias) => {
-      if (e.dead || m.players[e.o].team === me.team || !m.teamVisible(me.team, e)) return;
+      if (e.dead || m.players[e.o].team === me.team || !m.teamVisible(me.team, e) || m.disguisedTo(me.team, e)) return;
       const d = Math.hypot(cxx - gx, cyy - gy) + bias;
       if (d < bd) { bd = d; target = e; }
     };

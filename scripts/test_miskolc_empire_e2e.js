@@ -47,7 +47,7 @@ async function main() {
     const socket = connect(`http://127.0.0.1:${port}`, { auth, transports: ['websocket'], reconnection: false });
     sockets.push(socket);
     await new Promise((resolve, reject) => { socket.once('connect', resolve); socket.once('connect_error', reject); });
-    const c = { socket, ticks: [], snaps: [], ended: null, sessionEvents: [], res: null, paused: null, seen: new Map(), dead: new Set(), built: new Set(), tickCount: 0 };
+    const c = { socket, ticks: [], snaps: [], ended: null, sessionEvents: [], res: null, paused: null, seen: new Map(), dead: new Set(), built: new Set(), tickCount: 0, evs: [], chat: [] };
     socket.on('empire:snapshot', (s) => { c.snaps.push(s); c.res = s.res; c.paused = s.paused; c.seen.clear(); for (const u of s.units) c.seen.set(u.i, u); for (const b of s.buildings) c.seen.set(b.i, b); });
     socket.on('empire:tick', (t) => {
       c.ticks.push(t); c.tickCount++;
@@ -56,8 +56,9 @@ async function main() {
       for (const u of t.u || []) c.seen.set(u.i, { ...(c.seen.get(u.i) || {}), ...u });
       for (const b of t.b || []) c.seen.set(b.i, { ...(c.seen.get(b.i) || {}), ...b });
       for (const id of t.x || []) c.seen.delete(id);
-      for (const e of t.ev || []) { if (e.e === 'dead') c.dead.add(e.i); if (e.e === 'built') c.built.add(e.i); }
+      for (const e of t.ev || []) { c.evs.push(e); if (e.e === 'dead') c.dead.add(e.i); if (e.e === 'built') c.built.add(e.i); }
     });
+    socket.on('empire:chat', (m) => c.chat.push(m));
     socket.on('empire:match-ended', (m) => { c.ended = m; });
     socket.on('empire:session-updated', (m) => c.sessionEvents.push(m));
     c.call = (event, payload) => new Promise((resolve, reject) => {
@@ -269,6 +270,87 @@ async function main() {
   I.socket.disconnect();
   await until(() => !empire.getSession('hang-4'), 3000, 'üres lobbi törlése');
   log('lobbi: házigazda-átadás és üres lobbi törlése rendben');
+
+  // ---- 13. bontás, csevegés, megfigyelő mód (FFA: 3 ember + 1 MI) ----
+  const K = await client(authed(8, 'hang-5'));
+  const L = await client(authed(9, 'hang-5'));
+  const M = await client(authed(10, 'hang-5'));
+  await K.call('empire:create-match', { channelId: 'hang-5', mode: 'ffa', maxPlayers: 4 });
+  await L.call('empire:join-match', { roomId: 'hang-5' });
+  await M.call('empire:join-match', { roomId: 'hang-5' });
+  assert.strictEqual((await K.call('empire:start-match', { roomId: 'hang-5', fillWithAi: true, difficulty: 'easy' })).ok, true);
+  await until(() => K.snaps.length && L.snaps.length && M.snaps.length, 3000, 'snapshot (FFA)');
+  const fm = match('hang-5');
+  const kTc = K.snaps[0].buildings.find((b) => b.k === 'townCenter');
+  let spot = null;
+  for (let r = 5; r < 14 && !spot; r++) for (let dx = -r; dx <= r && !spot; dx++) if (!fm.checkPlacement(kTc.x + dx, kTc.y + r, 2)) spot = [kTc.x + dx, kTc.y + r];
+  const kHouse = fm.placeBuilding(0, 'house', spot[0], spot[1], true);
+  fm.recomputePopCap(fm.players[0]);
+  await pump(5);
+  const lTc = L.snaps[0].buildings.find((b) => b.k === 'townCenter');
+  assert.strictEqual((await K.call('empire:demolish-building', { roomId: 'hang-5', buildingId: lTc.i })).ok, false); // idegen épület
+  assert.strictEqual((await K.call('empire:demolish-building', { roomId: 'hang-1', buildingId: kHouse.id })).ok, false); // rossz szoba
+  const wood0 = fm.players[0].res.wood;
+  const dem = await K.call('empire:demolish-building', { roomId: 'hang-5', buildingId: kHouse.id });
+  assert.deepStrictEqual(dem, { ok: true, refund: { wood: 30 } });
+  assert.strictEqual(fm.players[0].res.wood, wood0 + 30);
+  await pump(3);
+  await until(() => K.dead.has(kHouse.id), 3000, 'bontás dead esemény');
+  const order = K.evs.filter((e) => e.i === kHouse.id).map((e) => e.e);
+  assert.deepStrictEqual(order, ['demolish', 'dead']);
+  log('bontás: visszatérítés az ack-ban, demolish esemény a dead előtt, idegen épület elutasítva');
+
+  assert.strictEqual((await K.call('empire:chat', { roomId: 'hang-5', text: '   ' })).ok, false);
+  assert.strictEqual((await K.call('empire:chat', { roomId: 'hang-5', text: 'x'.repeat(201) })).ok, false);
+  assert.strictEqual((await K.call('empire:chat', { roomId: 'hang-5', text: 'Szia Miskolc!' })).ok, true);
+  await until(() => L.chat.length && M.chat.length, 3000, 'csevegés');
+  assert.strictEqual(L.chat[0].from, 'jatekos8');
+  assert.strictEqual(L.chat[0].text, 'Szia Miskolc!');
+  assert.strictEqual(L.chat[0].spectator, false);
+  assert.strictEqual(L.chat[0].idx, 0);
+  log('csevegés: a szoba minden játékosa megkapja');
+
+  // L feladja: megfigyelő lesz, a szobában marad
+  const lSnaps = L.snaps.length;
+  assert.strictEqual((await L.call('empire:resign', { roomId: 'hang-5' })).ok, true);
+  await pump(15);
+  await until(() => L.evs.some((e) => e.e === 'defeat') && L.snaps.length > lSnaps, 3000, 'defeat és megfigyelő snapshot');
+  const defeat = L.evs.find((e) => e.e === 'defeat');
+  assert.deepStrictEqual(Object.keys(defeat.stats).sort(), ['buildingsDestroyed', 'damageDealt', 'gathered', 'unitsKilled', 'unitsLost']);
+  assert.ok(!K.evs.some((e) => e.e === 'defeat'), 'a defeat csak a kiesőnek szól');
+  const ls = L.snaps[L.snaps.length - 1];
+  assert.deepStrictEqual(ls.you, { idx: 1, team: 1, spectator: true });
+  assert.ok(ls.players[1].spectator === true && ls.players[0].spectator === false);
+  assert.ok(ls.units.some((u) => u.o === 0) && ls.units.some((u) => u.o === 2) && ls.units.some((u) => u.o === 3), 'a megfigyelő mindent lát');
+  assert.ok(ls.sv && ls.sv.players.length === 4);
+  await until(() => L.ticks.some((t) => t.sv), 3000, 'sv összesítő a tickben');
+  const lr = await L.call('empire:command', { roomId: 'hang-5', type: 'ping', target: { x: 5, y: 5 } });
+  assert.deepStrictEqual(lr, { ok: false, error: 'Megfigyelő módban nem adhatsz parancsot.' });
+  assert.strictEqual((await L.call('empire:chat', { roomId: 'hang-5', text: 'Csak nézek' })).ok, true);
+  await until(() => K.chat.some((c) => c.text === 'Csak nézek'), 3000, 'megfigyelő csevegése');
+  const specMsg = K.chat.find((c) => c.text === 'Csak nézek');
+  assert.strictEqual(specMsg.from, '[Néző] jatekos9');
+  assert.strictEqual(specMsg.spectator, true);
+  assert.strictEqual(empire.sessions.get('hang-5').status, 'playing');
+  log('megfigyelő: defeat statisztika, szűretlen snapshot, sv, parancs elutasítva, [Néző] csevegés');
+
+  // M is feladja, majd megfigyelőként kilép: nem kap több ticket, nem tud állapotot kérni
+  assert.strictEqual((await M.call('empire:resign', { roomId: 'hang-5' })).ok, true);
+  await pump(3);
+  assert.strictEqual((await M.call('empire:leave-match', { roomId: 'hang-5' })).ok, true);
+  assert.strictEqual((await M.call('empire:get-state', { roomId: 'hang-5' })).ok, false);
+  assert.strictEqual(empire.sessions.get('hang-5').status, 'playing');
+  log('megfigyelő kilépése: csak kilép, a meccs fut tovább');
+
+  // K is feladja: csak az MI marad, a meccs véget ér, a megfigyelő is megkapja a match-ended-et
+  assert.strictEqual((await K.call('empire:resign', { roomId: 'hang-5' })).ok, true);
+  await pump(3);
+  await until(() => L.ended && K.ended, 3000, 'match-ended a megfigyelőknek');
+  assert.strictEqual(L.ended.winnerTeam, 3);
+  assert.ok(L.ended.results.every((r) => typeof r.unitsLost === 'number' && typeof r.damageDealt === 'number'));
+  assert.ok(!empire.sessions.has('hang-5'));
+  assert.strictEqual(stat('acc9').ai_losses, 1);
+  log('meccs vége: a megfigyelők is megkapták az eredményt, a statisztika rögzült');
 
   const st = await B2.call('empire:get-stats');
   assert.strictEqual(st.ok, true);

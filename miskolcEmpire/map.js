@@ -86,15 +86,15 @@ function attempt(seed, playerCount) {
     const cx = sx + 1;
     const cy = sy + 1;
     const dir = [cx < w / 2 ? 1 : -1, cy < h / 2 ? 1 : -1];
-    cluster('iron', cx + dir[0] * 7, cy - dir[1] * 3, 4, 1600, 2);
-    cluster('copper', cx - dir[0] * 3, cy + dir[1] * 7, 3, 1100, 2);
-    cluster('food', cx + dir[0] * 3, cy + dir[1] * 5, 4, 1300, 2);
-    cluster('wood', cx - dir[0] * 6, cy - dir[1] * 2, 5, 900, 2);
+    cluster('iron', cx + dir[0] * 7, cy - dir[1] * 3, 4, 2400, 2);
+    cluster('copper', cx - dir[0] * 3, cy + dir[1] * 7, 3, 2200, 2);
+    cluster('food', cx + dir[0] * 3, cy + dir[1] * 5, 4, 1800, 2);
+    cluster('wood', cx - dir[0] * 6, cy - dir[1] * 2, 5, 1500, 2);
   });
   // Semleges készletek középen és oldalt
   for (const k of ['iron', 'copper', 'food', 'wood']) {
-    cluster(k, w / 2, h / 2, 3, k === 'wood' || k === 'food' ? 900 : 1500, 6);
-    cluster(k, rng.range(w * 0.3, w * 0.7), rng.range(h * 0.2, h * 0.8), 3, 1000, 4);
+    cluster(k, w / 2, h / 2, 3, k === 'wood' || k === 'food' ? 2400 : 3000, 6);
+    cluster(k, rng.range(w * 0.3, w * 0.7), rng.range(h * 0.2, h * 0.8), 3, k === 'wood' || k === 'food' ? 1700 : 2100, 4);
   }
   return { w, h, tiles: tiles.join(''), starts, nodes, ok: floodConnected(tiles, w, h, starts) };
 }

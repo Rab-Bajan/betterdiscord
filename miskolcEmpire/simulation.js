@@ -5,12 +5,26 @@ const { createRng } = require('./rng');
 const { generateMap } = require('./map');
 const { Pathfinder } = require('./pathfinding');
 
-const { TICK_HZ, POP_CAP_MAX, MAX_UNIT_IDS, MAX_QUEUE, EPOCHS, COUNTERS, BUILDINGS, UNITS } = C;
+const { TICK_HZ, POP_CAP_MAX, MAX_UNIT_IDS, MAX_QUEUE, EPOCHS, COUNTERS, BUILDINGS, UNITS, DEMOLISH } = C;
 const CELL = 8;
 const PATH_BUDGET = 14000;
 const GATHER_RATE = { iron: 0.7, copper: 0.6, food: 0.9, wood: 0.8 };
 const SPAWN_CROWD_PENALTY = 64; // squared tiles, outweighs the far side of a town center
 const START_RES = { iron: 200, copper: 100, food: 300, wood: 300 };
+const COMBAT_REVEAL_TICKS = 5 * TICK_HZ; // a kém harc után ennyi ideig leleplezett
+const SIPHON_RANGE = 1.5;
+const SIPHON_TARGETS = new Set(['scrapYard', 'townCenter']);
+const SIPHON_NOTICE_TICKS = 15 * TICK_HZ;
+const SPY_RANGE = 14;
+const SPECTATOR_ERROR = 'Megfigyelő módban nem adhatsz parancsot.';
+
+// Összesített építési sebesség N építőnél: 1 -> 1, 2 -> 1.7, 3 -> 2.2, minden további +0.4
+function buildMult(n) {
+  if (n <= 0) return 0;
+  if (n === 1) return 1;
+  if (n === 2) return 1.7;
+  return 2.2 + 0.4 * (n - 3);
+}
 
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const isInt = (v) => Number.isSafeInteger(v);
@@ -39,6 +53,7 @@ class EmpireMatch {
     this.pathQueue = [];
     this.vis = new Map();
     this.pingCd = new Map();
+    this.inStep = false;
 
     const map = generateMap(this.seed, players.length);
     this.map = { w: map.w, h: map.h, tiles: map.tiles };
@@ -59,7 +74,8 @@ class EmpireMatch {
     this.players = players.map((p, idx) => ({
       idx, name: p.name, team: p.team, color: p.color || C.PLAYER_COLORS[idx], isAi: !!p.isAi, difficulty: p.difficulty || null,
       alive: true, connected: true, epoch: 1, res: { ...START_RES }, pop: 0, popCap: 0, research: null, researchPct: 0,
-      stats: { unitsKilled: 0, buildingsDestroyed: 0, gathered: 0 }, gatherBonus: p.isAi && p.difficulty === 'hard' ? 1.25 : 1,
+      spectator: false, siphonT: -999,
+      stats: { unitsKilled: 0, buildingsDestroyed: 0, gathered: 0, unitsLost: 0, damageDealt: 0 }, gatherBonus: p.isAi && p.difficulty === 'hard' ? 1.25 : 1,
       startPos: map.starts[idx], heroes: [], taverns: []
     }));
 
@@ -84,6 +100,8 @@ class EmpireMatch {
   gatherMult(p) { return EPOCHS[p.epoch - 1].gather; }
   entity(id) { return this.units.get(id) || this.buildings.get(id) || null; }
   event(w, vis) { this.events.push({ w, vis }); }
+  // Tickek között (parancsból) keletkező esemény a következő tickkel megy ki, különben a step() felülírná
+  eventSoon(w, vis) { if (this.inStep) this.event(w, vis); else this.queued.push({ w, vis }); }
   // Két tick között érkező értesítés (pl. lekapcsolódás): a következő tickben megy ki
   notify(text) { this.queued.push({ w: { e: 'msg', text }, vis: { all: true } }); }
   // Szünet alatt nincs step, ezért itt vesszük elő a sorban álló eseményeket
@@ -119,6 +137,30 @@ class EmpireMatch {
     return !!vis && vis[Math.floor(y) * this.w + Math.floor(x)] === 1;
   }
 
+  // A kém az adott csapat szemében civilnek látszik-e (álcázott). Saját csapatnak sosem az.
+  disguisedTo(team, e) {
+    if (!e || e.size || !e.def.stealth || e.dead) return false;
+    if (this.players[e.o].team === team) return false;
+    if (this.tick - e.combatT <= COMBAT_REVEAL_TICKS) return false;
+    return !(e.trueSeen && e.trueSeen.has(team));
+  }
+
+  // Igazlátás: kész Őrtorony vagy Vajda Háza látókörében a kém leleplezett
+  computeTrueSight() {
+    for (const u of this.units.values()) {
+      if (u.dead || !u.def.stealth) continue;
+      const seen = u.trueSeen || (u.trueSeen = new Set());
+      seen.clear();
+      const ownTeam = this.players[u.o].team;
+      for (const b of this.buildings.values()) {
+        if (b.dead || !b.complete || (b.k !== 'tower' && b.k !== 'townCenter')) continue;
+        const team = this.players[b.o].team;
+        if (team === ownTeam || seen.has(team)) continue;
+        if (Math.hypot(b.x + b.size / 2 - u.x, b.y + b.size / 2 - u.y) <= b.def.sight) seen.add(team);
+      }
+    }
+  }
+
   // ---------- Entitások létrehozása ----------
   createUnit(owner, k, x, y) {
     const p = this.players[owner];
@@ -126,7 +168,8 @@ class EmpireMatch {
     const maxHp = def.hp * this.hpMult(p);
     const u = {
       id: this.nextId++, o: owner, k, def, x, y, hp: maxHp, maxHp, tx: x, ty: y, v: 0, st: 'idle', c: 0, ct: null,
-      order: null, path: null, pi: 0, pathPending: false, goalSig: null, pathT: -99, cd: 0, dead: false, hitT: -99, aggro: null
+      order: null, path: null, pi: 0, pathPending: false, goalSig: null, pathT: -99, cd: 0, dead: false, hitT: -99, aggro: null,
+      combatT: -999, trueSeen: null
     };
     this.units.set(u.id, u);
     return u;
@@ -171,7 +214,8 @@ class EmpireMatch {
     const def = BUILDINGS[k];
     const b = {
       id: this.nextId++, o: owner, k, def, x, y, size: def.size, hp: complete ? def.hp : Math.max(1, def.hp * 0.1), maxHp: def.hp,
-      bp: complete ? 100 : 0, bpF: complete ? 100 : 0, complete: !!complete, q: [], ra: null, cd: 0, dead: false, hitT: -99, bpShown: complete ? 100 : 0, qVer: 0, qCache: [], raVer: 0
+      bp: complete ? 100 : 0, bpF: complete ? 100 : 0, complete: !!complete, q: [], ra: null, cd: 0, dead: false, hitT: -99, bpShown: complete ? 100 : 0, qVer: 0, qCache: [], raVer: 0,
+      workT: -1, workN: 0
     };
     this.buildings.set(b.id, b);
     for (let yy = y; yy < y + b.size; yy++) for (let xx = x; xx < x + b.size; xx++) this.blocked[yy * this.w + xx] = 1;
@@ -215,6 +259,7 @@ class EmpireMatch {
     const p = this.players[idx];
     if (!p) return fail('Ismeretlen játékos.');
     if (this.status !== 'playing') return fail('A játék véget ért.');
+    if (p.spectator) return fail(SPECTATOR_ERROR);
     if (!p.alive) return fail('Már kiestél a játékból.');
     if (this.paused) return fail('A játék szünetel.');
     if (!isObj(cmd) || typeof cmd.type !== 'string' || cmd.type.length > 24) return fail('Érvénytelen parancs.');
@@ -327,6 +372,11 @@ class EmpireMatch {
   // ---------- Lépés ----------
   step() {
     if (this.status !== 'playing' || this.paused) return;
+    this.inStep = true;
+    try { this.stepInner(); } finally { this.inStep = false; }
+  }
+
+  stepInner() {
     this.tick++;
     this.events = this.queued.splice(0);
     this.buildHash();
@@ -369,7 +419,7 @@ class EmpireMatch {
     for (let cy = y0; cy <= y1; cy++) {
       for (let cx = x0; cx <= x1; cx++) {
         for (const e of this.cells[cy * this.cw + cx]) {
-          if (e.dead || this.players[e.o].team === team) continue;
+          if (e.dead || this.players[e.o].team === team || this.disguisedTo(team, e)) continue;
           const d = Math.hypot(e.x - x, e.y - y);
           if (d > r) continue;
           const score = d + (preferMilitary && e.def.class === 'worker' ? 3 : 0);
@@ -409,7 +459,7 @@ class EmpireMatch {
     const o = u.order;
     if (!o) {
       u.st = 'idle'; u.v = 0; u.tx = u.x; u.ty = u.y;
-      if (u.def.attack > 0 && u.def.class !== 'worker' && (this.tick + u.id) % 5 === 0) this.autoAcquire(u);
+      if (u.def.attack > 0 && u.def.class !== 'worker' && !u.def.stealth && (this.tick + u.id) % 5 === 0) this.autoAcquire(u);
       return;
     }
     switch (o.type) {
@@ -417,6 +467,7 @@ class EmpireMatch {
       case 'attack': return this.doAttack(u, o);
       case 'gather': return this.doGather(u, o);
       case 'build': return this.doBuild(u, o);
+      case 'siphon': return this.doSiphon(u, o);
       default: u.order = null;
     }
   }
@@ -447,7 +498,7 @@ class EmpireMatch {
   doAttack(u, o) {
     const p = this.players[u.o];
     const t = this.entity(o.target);
-    if (!t || t.dead || this.players[t.o].team === p.team || !this.teamVisible(p.team, t)) { u.order = null; u.st = 'idle'; this.stopUnit(u); return; }
+    if (!t || t.dead || this.players[t.o].team === p.team || !this.teamVisible(p.team, t) || this.disguisedTo(p.team, t)) { u.order = null; u.st = 'idle'; this.stopUnit(u); return; }
     if (o.auto && Math.hypot(t.x - o.ox, t.y - o.oy) > Math.max(u.def.range + 2, 7) + 6) { u.order = null; this.stopUnit(u); return; }
     u.st = 'attack';
     const d = this.distToEntity(u, t);
@@ -491,11 +542,15 @@ class EmpireMatch {
     if (aDef.range > 2) {
       this.event({ e: 'proj', a: a.id, x: r1(a.x), y: r1(a.y), tx: r1(isUnit ? t.x : t.x + t.size / 2), ty: r1(isUnit ? t.y : t.y + t.size / 2), k: a.k }, { pos: [[a.x, a.y], [t.x, t.y]] });
     }
+    a.combatT = this.tick;
     this.damage(a.o, t, dmg, a.id);
   }
 
   damage(attackerOwner, t, dmg, attackerId = null) {
     if (t.dead) return;
+    const ap = this.players[attackerOwner];
+    if (ap) ap.stats.damageDealt += Math.min(dmg, Math.max(0, t.hp));
+    if (!t.size) t.combatT = this.tick;
     t.hp -= dmg;
     const cx = t.size ? t.x + t.size / 2 : t.x;
     const cy = t.size ? t.y + t.size / 2 : t.y;
@@ -511,7 +566,7 @@ class EmpireMatch {
     if (!t.size && !t.order && attackerId !== null) t.aggro = attackerId;
     if (t.hp <= 0) {
       this.kill(t);
-      const ap = this.players[attackerOwner];
+      if (!t.size) victim.stats.unitsLost++;
       if (ap) { if (t.size) ap.stats.buildingsDestroyed++; else ap.stats.unitsKilled++; }
     }
   }
@@ -630,17 +685,103 @@ class EmpireMatch {
       return;
     }
     this.stopUnit(u);
+    // Csökkenő hozadék: a tickben az n-edik építő csak buildMult(n) - buildMult(n-1) sebességet ad hozzá
+    if (b.workT !== this.tick) { b.workT = this.tick; b.workN = 0; }
+    b.workN++;
+    const share = buildMult(b.workN) - buildMult(b.workN - 1);
     if (!b.complete) {
-      b.bpF = Math.min(100, b.bpF + 100 / (b.def.buildTime * TICK_HZ));
-      b.hp = Math.min(b.maxHp, b.hp + b.maxHp * 0.9 / (b.def.buildTime * TICK_HZ));
+      b.bpF = Math.min(100, b.bpF + share * 100 / (b.def.buildTime * TICK_HZ));
+      b.hp = Math.min(b.maxHp, b.hp + share * b.maxHp * 0.9 / (b.def.buildTime * TICK_HZ));
       if (b.bpF >= 100) {
         b.complete = true; b.bp = 100; b.bpShown = 100; b.hp = Math.max(b.hp, b.maxHp * 0.95);
         this.recomputePopCap(this.players[b.o]);
         this.event({ e: 'built', i: b.id }, { team: this.players[b.o].team });
       } else b.bp = Math.floor(b.bpF);
     } else {
-      b.hp = Math.min(b.maxHp, b.hp + b.maxHp / (b.def.buildTime * TICK_HZ * 2));
+      b.hp = Math.min(b.maxHp, b.hp + share * b.maxHp / (b.def.buildTime * TICK_HZ * 2));
     }
+  }
+
+  // ---------- Kém: dézsmálás ----------
+  doSiphon(u, o) {
+    const p = this.players[u.o];
+    const b = this.buildings.get(o.target);
+    if (!b || b.dead || this.players[b.o].team === p.team || !u.def.siphon) { u.order = null; u.st = 'idle'; this.stopUnit(u); return; }
+    const d = rectDist(u.x, u.y, b.x, b.y, b.x + b.size, b.y + b.size);
+    if (d > SIPHON_RANGE) {
+      u.st = 'move';
+      o.t = 0;
+      this.requestPath(u, `s${b.id}`, { x0: b.x, y0: b.y, x1: b.x + b.size - 1, y1: b.y + b.size - 1 }, 1);
+      this.advance(u);
+      if (!u.path && !u.pathPending) { u.goalSig = null; u.order = null; u.st = 'idle'; }
+      return;
+    }
+    this.stopUnit(u);
+    u.st = 'siphon';
+    o.t = (o.t || 0) + 1;
+    const sp = u.def.siphon;
+    if (o.t < sp.everySec * TICK_HZ) return;
+    o.t = 0;
+    const victim = this.players[b.o];
+    const iron = Math.max(0, Math.min(sp.iron, Math.floor(victim.res.iron)));
+    const copper = Math.max(0, Math.min(sp.copper, Math.floor(victim.res.copper)));
+    victim.res.iron -= iron; victim.res.copper -= copper;
+    p.res.iron += iron; p.res.copper += copper;
+    if ((iron > 0 || copper > 0) && this.tick - victim.siphonT >= SIPHON_NOTICE_TICKS) {
+      victim.siphonT = this.tick;
+      this.event({ e: 'siphoned', text: 'Valaki dézsmálja a készleteidet a MÉH telepnél!', x: r2(b.x + b.size / 2), y: r2(b.y + b.size / 2) }, { owner: victim.idx });
+    }
+  }
+
+  // ---------- Bontás ----------
+  demolishRefund(b) {
+    let r;
+    if (!b.complete) r = DEMOLISH.maxRefund * (b.bp / 100);
+    else {
+      const f = Math.max(0, Math.min(1, b.hp / b.maxHp));
+      r = f >= 0.5 ? DEMOLISH.minRefund + (DEMOLISH.maxRefund - DEMOLISH.minRefund) * ((f - 0.5) / 0.5) : DEMOLISH.minRefund * (f / 0.5);
+    }
+    const out = {};
+    for (const k of Object.keys(b.def.cost)) out[k] = Math.floor(b.def.cost[k] * r + 1e-9);
+    return out;
+  }
+
+  // ---------- Kémjelentés ----------
+  spyReport(idx) {
+    const me = this.players[idx];
+    const out = [];
+    if (!me || !me.alive) return out;
+    for (const u of this.units.values()) {
+      if (u.dead || u.o !== idx || !u.def.stealth) continue;
+      let best = null;
+      let bd = SPY_RANGE;
+      for (const b of this.buildings.values()) {
+        if (b.dead || this.players[b.o].team === me.team) continue;
+        const d = rectDist(u.x, u.y, b.x, b.y, b.x + b.size, b.y + b.size);
+        if (d <= bd) { bd = d; best = b; }
+      }
+      if (!best) continue;
+      const v = this.players[best.o];
+      let military = 0;
+      for (const e of this.units.values()) if (!e.dead && e.o === v.idx && e.def.class !== 'worker') military++;
+      out.push({
+        unitId: u.id, victim: v.idx, name: v.name, color: v.color,
+        res: { iron: Math.floor(v.res.iron), copper: Math.floor(v.res.copper), food: Math.floor(v.res.food), wood: Math.floor(v.res.wood) },
+        epoch: v.epoch, research: v.research ? { epoch: v.research.epoch, pct: v.researchPct } : null, military
+      });
+    }
+    return out;
+  }
+
+  // Megfigyelői összesítő (1 Hz)
+  spectatorSummary() {
+    const rows = this.players.map((p) => ({
+      idx: p.idx, name: p.name, color: p.color, team: p.team, alive: p.alive, army: 0, workers: 0, buildings: 0, epoch: p.epoch,
+      res: { iron: Math.floor(p.res.iron), copper: Math.floor(p.res.copper), food: Math.floor(p.res.food), wood: Math.floor(p.res.wood) }
+    }));
+    for (const u of this.units.values()) if (!u.dead) { if (u.def.class === 'worker') rows[u.o].workers++; else rows[u.o].army++; }
+    for (const b of this.buildings.values()) if (!b.dead) rows[b.o].buildings++;
+    return { elapsed: Math.floor(this.tick / TICK_HZ), players: rows };
   }
 
   // ---------- Épületek: képzés, torony ----------
@@ -722,12 +863,19 @@ class EmpireMatch {
   eliminate(p, why) {
     if (!p.alive) return;
     p.alive = false;
+    p.spectator = !p.isAi;
     p.research = null;
     for (const u of this.units.values()) if (u.o === p.idx) { u.dead = true; }
     for (const b of this.buildings.values()) if (b.o === p.idx) { b.dead = true; }
     this.cleanup();
     p.pop = 0;
-    this.event({ e: 'msg', text: why === 'resign' ? `${p.name} feladta a játékot.` : `${p.name} kiesett: nincs több épülete.` }, { all: true });
+    this.eventSoon({ e: 'msg', text: why === 'resign' ? `${p.name} feladta a játékot.` : `${p.name} kiesett: nincs több épülete.` }, { all: true });
+    this.eventSoon({ e: 'defeat', stats: this.statsView(p) }, { owner: p.idx });
+  }
+
+  statsView(p) {
+    const s = p.stats;
+    return { unitsLost: s.unitsLost, unitsKilled: s.unitsKilled, buildingsDestroyed: s.buildingsDestroyed, gathered: Math.floor(s.gathered), damageDealt: Math.floor(s.damageDealt) };
   }
 
   resign(idx) {
@@ -742,7 +890,8 @@ class EmpireMatch {
   results() {
     return this.players.map((p) => ({
       idx: p.idx, name: p.name, team: p.team, isAi: p.isAi, won: this.winnerTeam !== null && p.team === this.winnerTeam,
-      unitsKilled: p.stats.unitsKilled, buildingsDestroyed: p.stats.buildingsDestroyed, gathered: Math.floor(p.stats.gathered)
+      unitsKilled: p.stats.unitsKilled, buildingsDestroyed: p.stats.buildingsDestroyed, gathered: Math.floor(p.stats.gathered),
+      unitsLost: p.stats.unitsLost, damageDealt: Math.floor(p.stats.damageDealt)
     }));
   }
 
@@ -766,6 +915,7 @@ class EmpireMatch {
     };
     for (const u of this.units.values()) if (!u.dead) stamp(this.vis.get(this.players[u.o].team), u.x, u.y, u.def.sight);
     for (const b of this.buildings.values()) if (!b.dead) stamp(this.vis.get(this.players[b.o].team), b.x + b.size / 2, b.y + b.size / 2, b.def.sight + b.size / 2);
+    this.computeTrueSight();
   }
 
   // ---------- Pillanatkép ----------
@@ -774,6 +924,17 @@ class EmpireMatch {
       i: u.id, o: u.o, k: u.k, x: r2(u.x), y: r2(u.y), tx: r2(u.tx), ty: r2(u.ty), v: r2(u.v), hp: Math.max(1, Math.round(u.hp)), st: u.st,
       c: Math.floor(u.c), ct: u.ct || null, tg: u.order && u.order.target ? u.order.target : (u.order && u.order.node ? u.order.node : null)
     };
+  }
+
+  // A néző szemszögéből: az álcázott kém civilnek látszik (k: 'civilian', o: -1), a dézsmálás állapota rejtve
+  unitFor(u, team, spectator) {
+    const full = this.unitFull(u);
+    if (!spectator && this.disguisedTo(team, u)) {
+      full.k = 'civilian'; full.o = -1;
+      if (full.st === 'siphon') full.st = 'idle';
+      full.tg = null; full.c = 0; full.ct = null; // a célpont és a rakomány is leleplezné
+    }
+    return full;
   }
 
   buildingFull(b) {
@@ -789,17 +950,20 @@ class EmpireMatch {
 
   snapshot(idx) {
     const me = this.players[idx];
+    const spec = !!me.spectator;
     const units = [];
     const buildings = [];
-    for (const u of this.units.values()) if (!u.dead && (this.players[u.o].team === me.team || this.teamVisible(me.team, u))) units.push(this.unitFull(u));
-    for (const b of this.buildings.values()) if (!b.dead && (this.players[b.o].team === me.team || this.teamVisible(me.team, b))) buildings.push(this.buildingFull(b));
-    return {
-      roomId: null, status: this.status, tick: this.tick, tickHz: TICK_HZ, you: { idx, team: me.team },
-      players: this.players.map((p) => ({ idx: p.idx, name: p.name, team: p.team, color: p.color, isAi: p.isAi, alive: p.alive, connected: p.connected, epoch: p.epoch })),
+    for (const u of this.units.values()) if (!u.dead && (spec || this.players[u.o].team === me.team || this.teamVisible(me.team, u))) units.push(this.unitFor(u, me.team, spec));
+    for (const b of this.buildings.values()) if (!b.dead && (spec || this.players[b.o].team === me.team || this.teamVisible(me.team, b))) buildings.push(this.buildingFull(b));
+    const snap = {
+      roomId: null, status: this.status, tick: this.tick, tickHz: TICK_HZ, you: { idx, team: me.team, spectator: spec },
+      players: this.players.map((p) => ({ idx: p.idx, name: p.name, team: p.team, color: p.color, isAi: p.isAi, alive: p.alive, connected: p.connected, epoch: p.epoch, spectator: !!p.spectator })),
       map: this.map,
       nodes: [...this.nodes.values()].map((n) => ({ i: n.id, k: n.k, x: n.x, y: n.y, a: Math.ceil(n.a) })),
-      units, buildings, res: this.resView(me), paused: this.paused
+      units, buildings, res: this.resView(me), paused: this.paused, spy: this.spyReport(idx)
     };
+    if (spec) snap.sv = this.spectatorSummary();
+    return snap;
   }
 }
 
@@ -842,9 +1006,37 @@ COMMANDS.set('attack', (m, p, c) => {
   if (r.error) return fail(r.error);
   const id = m.parseEntityId(c.target);
   const t = id === null ? null : m.entity(id);
-  if (!t || t.dead || m.players[t.o].team === p.team || !m.teamVisible(p.team, t)) return fail('Érvénytelen célpont.');
-  for (const u of r.units) m.setOrder(u, { type: 'attack', target: t.id });
+  if (!t || t.dead || m.players[t.o].team === p.team || !m.teamVisible(p.team, t) || m.disguisedTo(p.team, t)) return fail('Érvénytelen célpont.');
+  const siphon = t.size && SIPHON_TARGETS.has(t.k);
+  // A kém támadási parancsa MÉH telepre vagy Vajda Házára dézsmálássá alakul
+  for (const u of r.units) m.setOrder(u, siphon && u.def.siphon ? { type: 'siphon', target: t.id, t: 0 } : { type: 'attack', target: t.id });
   return OK;
+});
+
+COMMANDS.set('siphon', (m, p, c) => {
+  const r = m.parseUnits(p, c);
+  if (r.error) return fail(r.error);
+  const id = m.parseEntityId(c.target);
+  const t = id === null ? null : m.buildings.get(id);
+  if (!t || t.dead || m.players[t.o].team === p.team || !SIPHON_TARGETS.has(t.k) || !m.teamVisible(p.team, t)) return fail('Érvénytelen célpont.');
+  const spies = r.units.filter((u) => u.def.siphon);
+  if (!spies.length) return fail('Csak a Vándor Kém tud dézsmálni.');
+  for (const u of spies) m.setOrder(u, { type: 'siphon', target: t.id, t: 0 });
+  return OK;
+});
+
+COMMANDS.set('demolish', (m, p, c) => {
+  const b = m.ownBuilding(p, c.buildingId);
+  if (!b) return fail('Érvénytelen épület.');
+  const refund = m.demolishRefund(b);
+  m.refund(p, refund);
+  const cx = b.x + b.size / 2;
+  const cy = b.y + b.size / 2;
+  m.eventSoon({ e: 'demolish', i: b.id, k: b.k, x: b.x, y: b.y, size: b.size }, { pos: [[cx, cy]] });
+  b.dead = true;
+  m.eventSoon({ e: 'dead', i: b.id, x: r1(cx), y: r1(cy) }, { pos: [[cx, cy]] });
+  m.recomputePopCap(p);
+  return { ok: true, refund };
 });
 
 COMMANDS.set('gather', (m, p, c) => {
@@ -959,8 +1151,8 @@ COMMANDS.set('ping', (m, p, c) => {
   if (!t) return fail('Érvénytelen célpont.');
   if (m.tick - (m.pingCd.get(p.idx) ?? -99) < 10) return fail('Lassabban pingelj.');
   m.pingCd.set(p.idx, m.tick);
-  m.event({ e: 'ping', x: r2(t.x), y: r2(t.y), o: p.idx }, { team: p.team });
+  m.eventSoon({ e: 'ping', x: r2(t.x), y: r2(t.y), o: p.idx }, { team: p.team });
   return OK;
 });
 
-module.exports = { EmpireMatch, GATHER_RATE, START_RES };
+module.exports = { EmpireMatch, GATHER_RATE, START_RES, buildMult, SPECTATOR_ERROR };
