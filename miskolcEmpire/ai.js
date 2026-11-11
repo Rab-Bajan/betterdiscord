@@ -161,7 +161,12 @@ class AiController {
     const list = (k) => blds.done.get(k) || [];
     const mix = this.m.tick;
     for (const b of list('barracks')) if (b.q.length < 2) this.train(me, b, me.epoch >= 2 && (mix + b.id) % 3 !== 0 ? 'airgunner' : 'slingshot');
-    for (const b of list('tavern')) if (b.q.length < 2) this.train(me, b, me.epoch >= 2 && (mix + b.id) % 2 === 0 ? 'brawler' : 'knife');
+    for (const b of list('tavern')) {
+      if (b.q.length >= 2) continue;
+      // Az asszony csak réztartalékból jön, hogy a korszakváltásra is maradjon
+      if ((mix + b.id) % 4 === 0 && me.res.copper >= 250 && this.train(me, b, 'ciganyAsszony')) continue;
+      this.train(me, b, me.epoch >= 2 && (mix + b.id) % 2 === 0 ? 'brawler' : 'knife');
+    }
     for (const b of list('workshop')) {
       if (b.q.length >= 2) continue;
       const roll = (mix / this.params.every + b.id) % 5 | 0;
@@ -213,7 +218,7 @@ class AiController {
     let target = null;
     let bd = Infinity;
     const consider = (e, cxx, cyy, bias) => {
-      if (e.dead || m.players[e.o].team === me.team || !m.teamVisible(me.team, e)) return;
+      if (e.dead || m.players[e.o].team === me.team || !m.teamVisible(me.team, e) || m.disguisedTo(me.team, e)) return;
       const d = Math.hypot(cxx - gx, cyy - gy) + bias;
       if (d < bd) { bd = d; target = e; }
     };

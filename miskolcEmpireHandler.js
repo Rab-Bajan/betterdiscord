@@ -15,6 +15,7 @@ const MODES = ['ai', '1v1', '2v2', 'ffa'];
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const str = (v, max) => typeof v === 'string' && v.length > 0 && v.length <= max;
 const fail = (error) => ({ ok: false, error });
+const CHAT_MAX = 200;
 
 function setupMiskolcEmpire(io, users, opts = {}) {
   const db = opts.db || require('./database').db;
@@ -56,8 +57,8 @@ function setupMiskolcEmpire(io, users, opts = {}) {
   // ---------- Korlátozás ----------
   const buckets = new WeakMap();
   function allow(socket, kind) {
-    const cap = kind === 'cmd' ? 60 : 12;
-    const rate = kind === 'cmd' ? 40 : 6;
+    const cap = kind === 'cmd' ? 60 : kind === 'chat' ? 5 : 12;
+    const rate = kind === 'cmd' ? 40 : kind === 'chat' ? 1 : 6;
     let all = buckets.get(socket);
     if (!all) { all = {}; buckets.set(socket, all); }
     const t = now();
@@ -175,21 +176,29 @@ function setupMiskolcEmpire(io, users, opts = {}) {
     broadcastMatches();
   }
 
-  function resignPlayer(s, p, auto) {
+  // stay: a feladó a szobában marad megfigyelőként (empire:resign); különben kilép (leave-match, türelmi idő)
+  function resignPlayer(s, p, auto, stay = false) {
     const m = s.match;
     if (!m || p.left) return;
     if (auto && !s.players.some((x) => !x.isAi && x !== p && !x.left && x.connected)) {
       // Mindenki lekapcsolódott: a meccs eldobva, nem számít bele a statisztikába
       return finish(s, true);
     }
-    p.left = true;
     m.resign(p.idx);
-    release(s, p);
-    p.connected = false;
-    m.players[p.idx].connected = false;
+    if (!stay) leaveMatch(s, p);
     if (m.status === 'ended') return finish(s, false);
     sessionChanged(s);
   }
+
+  // Végleges kilépés egy futó meccsből (megfigyelő is): nem kap több ticket
+  function leaveMatch(s, p) {
+    p.left = true;
+    release(s, p);
+    p.connected = false;
+    s.match.players[p.idx].connected = false;
+  }
+
+  const isSpectator = (s, p) => !!(s.match && s.match.players[p.idx] && s.match.players[p.idx].spectator);
 
   // ---------- Szünet és türelmi idő ----------
   function service(s) {
@@ -205,6 +214,9 @@ function setupMiskolcEmpire(io, users, opts = {}) {
       resignPlayer(s, p, true);
     }
     if (s.status !== 'playing') return;
+    // Nincs élő ember a meccsben, és megfigyelő sincs csatlakozva: senki sem nézi, a meccs eldobva
+    const humans = s.players.filter((p) => !p.isAi && !p.left);
+    if (!humans.some((p) => m.players[p.idx].alive) && !humans.some((p) => p.connected)) return finish(s, true);
     const waiting = s.players.filter((p) => !p.isAi && !p.left && !p.connected && m.players[p.idx].alive);
     if (!waiting.length) {
       if (m.paused) { m.paused = null; s.pauseKey = ''; m.notify('A játék folytatódik.'); }
@@ -228,6 +240,8 @@ function setupMiskolcEmpire(io, users, opts = {}) {
         if (!sock) continue;
         const tick = buildTick(m, p.idx, p.view);
         if (tick) sock.emit('empire:tick', tick);
+        // Kiesés után egyszer friss, szűretlen snapshot (you.spectator: true)
+        if (m.players[p.idx].spectator && !p.specSent) { p.specSent = true; sendSnapshot(s, p); }
       }
       if (m.status === 'ended') finish(s, false);
     } catch (err) {
@@ -388,7 +402,9 @@ function setupMiskolcEmpire(io, users, opts = {}) {
       const me = mySession();
       if (!me || !str(d.roomId, 80) || me.s.roomId !== d.roomId) return fail('Nem vagy ebben a meccsben.');
       const { s, p } = me;
-      if (s.status === 'lobby') leaveLobby(s, p); else resignPlayer(s, p, false);
+      if (s.status === 'lobby') leaveLobby(s, p);
+      else if (isSpectator(s, p)) { leaveMatch(s, p); sessionChanged(s); }
+      else resignPlayer(s, p, false);
       return { ok: true };
     };
     guard('empire:leave-match', 'misc', leave);
@@ -396,7 +412,8 @@ function setupMiskolcEmpire(io, users, opts = {}) {
       const me = mySession();
       if (!me || !str(d.roomId, 80) || me.s.roomId !== d.roomId) return fail('Nem vagy ebben a meccsben.');
       if (me.s.status !== 'playing') return fail('A meccs nem fut.');
-      resignPlayer(me.s, me.p, false);
+      if (isSpectator(me.s, me.p)) return fail('Már kiestél a játékból.');
+      resignPlayer(me.s, me.p, false, true);
       return { ok: true };
     });
 
@@ -413,6 +430,24 @@ function setupMiskolcEmpire(io, users, opts = {}) {
       if (!me || !str(d.roomId, 80) || me.s.roomId !== d.roomId) return fail('Nem vagy ebben a meccsben.');
       if (me.s.status !== 'playing' || me.p.left) return fail('A meccs nem fut.');
       return me.s.match.command(me.p.idx, d);
+    });
+
+    guard('empire:demolish-building', 'cmd', (user, d) => {
+      const me = mySession();
+      if (!me || !str(d.roomId, 80) || me.s.roomId !== d.roomId) return fail('Nem vagy ebben a meccsben.');
+      if (me.s.status !== 'playing' || me.p.left) return fail('A meccs nem fut.');
+      return me.s.match.command(me.p.idx, { type: 'demolish', buildingId: d.buildingId });
+    });
+
+    guard('empire:chat', 'chat', (user, d) => {
+      const me = mySession();
+      if (!me || !str(d.roomId, 80) || me.s.roomId !== d.roomId) return fail('Nem vagy ebben a meccsben.');
+      if (me.s.status === 'ended' || me.p.left) return fail('A meccs nem fut.');
+      const text = typeof d.text === 'string' ? d.text.trim() : '';
+      if (text.length < 1 || text.length > CHAT_MAX) return fail('Az üzenet 1-200 karakter lehet.');
+      const spectator = isSpectator(me.s, me.p);
+      io.to(roomOf(me.s.roomId)).emit('empire:chat', { from: (spectator ? '[Néző] ' : '') + me.p.name, idx: me.p.idx, text, spectator, t: now() });
+      return { ok: true };
     });
 
     socket.on('disconnect', () => {

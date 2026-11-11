@@ -7,6 +7,14 @@ const cors = require('cors');
 
 const PORT = process.env.PORT || 5000;
 
+// Egy rosszul formált kliens-payload ne dönthesse le az egész szervert
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL-GUARD] uncaughtException:', err && err.stack ? err.stack : err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[FATAL-GUARD] unhandledRejection:', reason && reason.stack ? reason.stack : reason);
+});
+
 const app = express();
 app.use(cors({ origin: '*', methods: ['GET', 'POST'] }));
 // A PGN fájlok a szokásosnál nagyobbak lehetnek (az elemzés importja)

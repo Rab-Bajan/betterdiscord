@@ -405,6 +405,7 @@ describe('MiskolcPhobia Ghost AI Simulation Engine', () => {
       };
 
       const session = {
+        roomId: 'test_room',
         players: [victim, survivor],
         droppedItems: [],
         huntActive: true
@@ -453,7 +454,7 @@ describe('MiskolcPhobia Ghost AI Simulation Engine', () => {
       const events = [];
       const mockIo = { emit: (name, data) => events.push({ name, data }), to: () => mockIo };
 
-      triggerInteraction(poltergeist, {}, mockIo, { id: 'pipe_1' });
+      triggerInteraction(poltergeist, { roomId: 'test_room' }, mockIo, { id: 'pipe_1' });
 
       const thrown = events.find(e => e.name === 'phobia:item-thrown');
       assert.ok(thrown);

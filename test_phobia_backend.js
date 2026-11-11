@@ -2,6 +2,7 @@
 // Validates socket events, authoritative 12 Hz tick loop, physics/environment states,
 // circuit breaker overload (max 6 lights), Mobile Jesus hunt cancellation, and SQLite persistence.
 
+process.env.PHOBIA_TEST_HOOKS = '1'; // teszt hookok + teszt szoba azonosító (test_room_*)
 const assert = require('assert');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -167,6 +168,10 @@ async function runPhobiaBackendTests() {
     if (!session.ghost.evidence.includes('emf_5')) {
       session.ghost.evidence.push('emf_5');
     }
+    // hasEvidence() a szellem aktív bizonyítékait nézi (evidenceCount szerint), ezért ott is pótoljuk
+    if (Array.isArray(session.ghost.activeEvidence) && !session.ghost.activeEvidence.includes('emf_5')) {
+      session.ghost.activeEvidence.push('emf_5');
+    }
     if (session.ghost.type && session.ghost.type.evidences && !session.ghost.type.evidences.includes('emf_5')) {
       session.ghost.type.evidences.push('emf_5');
     }
@@ -199,9 +204,9 @@ async function runPhobiaBackendTests() {
     const lightIds = [
       'light_mazsahaz_office',
       'light_mazsahaz_hall',
-      'light_hangar_bay1',
-      'light_hangar_bay2',
-      'light_kennel_shed',
+      'light_hangar_flood_1',
+      'light_hangar_flood_2',
+      'light_sufni_1',
       'light_gate_floodlight'
     ];
 
@@ -271,6 +276,7 @@ async function runPhobiaBackendTests() {
     console.log('>>> [TEST] Step 8: Drinking Borsodi Szilvapálinka for +35% sanity...');
     const player1 = session.players.get(client1.id);
     player1.sanity = 45.0; // Reduce sanity to test restoration
+    player1.inventory[1] = { id: 'sanity_palinka_1', type: 'sanity_palinka', usesLeft: 1 }; // a pálinkát tartani kell
 
     const sanityPromise = new Promise((resolve) => {
       client1.once('phobia:sanity-updated', (data) => resolve(data));
@@ -300,6 +306,144 @@ async function runPhobiaBackendTests() {
     assert.strictEqual(doorData.open, true, 'Door should be opened');
     assert.strictEqual(doorData.angle, 1.0, 'Door angle should be 1.0');
     console.log('  [PASS] Step 9: Hinged door opened with angle 1.0.');
+
+    // ------------------------------------------------------------------------
+    // Step 9b: Client item throw rebroadcast (sender excluded, velocity clamped)
+    // ------------------------------------------------------------------------
+    console.log('>>> [TEST] Step 9b: Client emits phobia:item-thrown, peer receives clamped impulse...');
+    const thrownPeer = new Promise((resolve) => client2.once('phobia:item-thrown', resolve));
+    let senderGotEcho = false;
+    client1.once('phobia:item-thrown', () => { senderGotEcho = true; });
+    const thrower = session.players.get(client1.id);
+    const thrownId = session.scrapProps[0].id;
+
+    // invalid payload and unknown item are ignored
+    client1.emit('phobia:item-thrown', { roomId: testRoomId, itemId: 'nope', position: { x: 0, y: 0, z: 0 }, velocity: { x: 1, y: 1, z: 1 } });
+    client1.emit('phobia:item-thrown', { roomId: testRoomId, itemId: thrownId, position: { x: NaN, y: 0, z: 0 }, velocity: { x: 1, y: 1, z: 1 } });
+    client1.emit('phobia:item-thrown', {
+      roomId: testRoomId,
+      itemId: thrownId,
+      position: { x: thrower.position[0], y: 1, z: thrower.position[2] },
+      velocity: { x: 300, y: 0, z: 400 }
+    });
+
+    const peerThrow = await thrownPeer;
+    assert.strictEqual(peerThrow.propId, thrownId, 'propId should match');
+    assert.strictEqual(peerThrow.x, thrower.position[0], 'x should be echoed');
+    assert.strictEqual(peerThrow.y, 1, 'y should be echoed');
+    assert(Math.abs(Math.hypot(...peerThrow.impulse) - 20) < 1e-9, 'impulse magnitude must be clamped to 20');
+    await new Promise((r) => setTimeout(r, 100));
+    assert.strictEqual(senderGotEcho, false, 'sender must not receive its own throw');
+    console.log('  [PASS] Step 9b: item-thrown validated, clamped and rebroadcast to peer only.');
+
+    // ------------------------------------------------------------------------
+    // Step 9c: Lobby flow, settings, hiding, world item sync, objectives (separate room)
+    // ------------------------------------------------------------------------
+    console.log('>>> [TEST] Step 9c: Lobby settings, late-join snapshot, item sync, hide, objectives...');
+    const lobbyRoom = 'test_room_lobby_' + Date.now();
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const once = (c, ev) => new Promise((r) => c.once(ev, r));
+    const hostC = client1;
+    const peerC = client2;
+    const lobbyInit = once(hostC, 'phobia:session-init');
+    hostC.emit('phobia:init-session', { roomId: lobbyRoom, userId: testUserId1, username: 'Host', lobby: true, settings: { evidenceCount: 2, startingSanity: 80 } });
+    const lobbySnap = await lobbyInit;
+    assert.strictEqual(lobbySnap.session.status, 'lobby');
+    assert.strictEqual(lobbySnap.session.hostSocketId, hostC.id);
+    assert.deepStrictEqual(lobbySnap.session.settings, { evidenceCount: 2, startingSanity: 80 });
+    const peerInit = once(peerC, 'phobia:session-init');
+    peerC.emit('phobia:init-session', { roomId: lobbyRoom, userId: testUserId2, username: 'Peer', lobby: true });
+    await peerInit;
+
+    // non-host rejected; host validated/clamped
+    const lobbySession = phobia.sessions.get(lobbyRoom);
+    peerC.emit('phobia:update-settings', { roomId: lobbyRoom, settings: { evidenceCount: 1, startingSanity: 10 } });
+    await wait(100);
+    assert.deepStrictEqual(lobbySession.settings, { evidenceCount: 2, startingSanity: 80 }, 'non-host must not change settings');
+    const updated = once(peerC, 'phobia:settings-updated');
+    hostC.emit('phobia:update-settings', { roomId: lobbyRoom, settings: { evidenceCount: 9, startingSanity: 50 } });
+    const upd = await updated;
+    assert.deepStrictEqual(upd.settings, { evidenceCount: 3, startingSanity: 50 }, 'settings clamped');
+    hostC.emit('phobia:update-settings', { roomId: lobbyRoom, settings: { evidenceCount: 1, startingSanity: 60 } });
+    await wait(100);
+
+    // start-match: non-host ignored, host applies settings
+    peerC.emit('phobia:start-match', { roomId: lobbyRoom });
+    await wait(100);
+    assert.strictEqual(lobbySession.status, 'lobby', 'non-host cannot start');
+    const startInit = once(peerC, 'phobia:session-init');
+    hostC.emit('phobia:start-match', { roomId: lobbyRoom });
+    const started = await startInit;
+    assert.strictEqual(started.session.status, 'active');
+    assert.strictEqual(started.session.settings.evidenceCount, 1);
+    assert.strictEqual(started.self.sanity, 60, 'starting sanity applied');
+    assert.strictEqual(lobbySession.players.get(hostC.id).sanity, 60);
+    assert.strictEqual(lobbySession.ghost.activeEvidence?.length ?? 1, 1, 'evidenceCount applied to ghost');
+    assert.strictEqual(started.session.objectives.length, 3);
+
+    // drop an item, move it, late joiner sees it moved
+    const hostP = lobbySession.players.get(hostC.id);
+    hostP.position = [-3.5, 0, -14.5];
+    hostC.emit('phobia:pickup-item', { roomId: lobbyRoom, itemId: 'mobile_jesus', slot: 0 }); // rack id fix
+    await wait(150);
+    assert(hostP.inventory[0] && hostP.inventory[0].type === 'mobile_jesus', 'client rack id must resolve to shelf item');
+    const spawned = once(peerC, 'phobia:world-item-updated');
+    hostC.emit('phobia:drop-item', { roomId: lobbyRoom, slot: 0, x: -3.5, y: 0.1, z: -14.5 });
+    const sp = await spawned;
+    assert.strictEqual(sp.action, 'spawned');
+    assert.strictEqual(sp.actorSocketId, hostC.id);
+    const movedEv = once(peerC, 'phobia:world-item-updated');
+    hostC.emit('phobia:item-moved', { roomId: lobbyRoom, itemId: 'mobile_jesus_1', position: { x: -2, y: 0.2, z: -13 }, rotation: { x: 0.1, y: 0.2, z: 0.3 } });
+    const mv = await movedEv;
+    assert.strictEqual(mv.action, 'moved');
+    assert.strictEqual(mv.item.x, -2);
+    assert.strictEqual(mv.item.ry, 0.2);
+    hostC.emit('phobia:item-moved', { roomId: lobbyRoom, itemId: 'nope', position: { x: 1, y: 1, z: 1 }, rotation: { x: 0, y: 0, z: 0 } });
+    hostC.emit('phobia:item-moved', { roomId: lobbyRoom, itemId: 'mobile_jesus_1', position: { x: NaN, y: 1, z: 1 }, rotation: { x: 0, y: 0, z: 0 } });
+    await wait(100);
+    assert.strictEqual(lobbySession.droppedItems[0].x, -2, 'invalid moves ignored');
+
+    const client3 = ioClient(serverUrl, { reconnection: false, transports: ['websocket'] });
+    await once(client3, 'connect');
+    const lateInit = once(client3, 'phobia:session-init');
+    client3.emit('phobia:init-session', { roomId: lobbyRoom, userId: 'late_' + Date.now(), username: 'Late', lobby: true });
+    const late = await lateInit;
+    const lateItem = late.session.droppedItems.find((i) => i.id === 'mobile_jesus_1');
+    assert(lateItem, 'late joiner snapshot must contain dropped item');
+    assert.strictEqual(lateItem.x, -2);
+    assert.strictEqual(lateItem.rz, 0.3);
+    assert(late.session.scrapProps.length > 0 && late.session.doors && late.session.lights);
+
+    // hide validation
+    const hideEv = once(peerC, 'phobia:player-hide');
+    hostC.emit('phobia:hide', { roomId: lobbyRoom, spotId: 'car_trunk_1', hidden: true }); // too far
+    hostC.emit('phobia:hide', { roomId: lobbyRoom, spotId: 'nonexistent', hidden: true });
+    await wait(100);
+    assert.strictEqual(hostP.hidingSpotId, null, 'far/unknown spot rejected');
+    hostP.position = [-17.5, 0, 8.5];
+    hostC.emit('phobia:hide', { roomId: lobbyRoom, spotId: 'car_trunk_1', hidden: true });
+    const hideData = await hideEv;
+    assert.deepStrictEqual(hideData, { socketId: hostC.id, spotId: 'car_trunk_1', hidden: true });
+    assert.strictEqual(hostP.hidingSpotId, 'car_trunk_1');
+    hostC.emit('phobia:hide', { roomId: lobbyRoom, spotId: 'car_trunk_1', hidden: false });
+    await wait(100);
+    assert.strictEqual(hostP.hidingSpotId, null);
+
+    // speaking flag
+    hostC.emit('phobia:player-speaking', { roomId: lobbyRoom, isSpeaking: true });
+    await wait(100);
+    assert.strictEqual(hostP.isSpeaking, true);
+
+    // objective completion (server-detected): drink palinka if drawn, else force via palinka path
+    lobbySession.objectives[0] = { id: 'drink_palinka', textHu: 'x', done: false, rewardFt: 300 };
+    hostP.inventory[1] = { id: 'sanity_palinka_x', type: 'sanity_palinka' };
+    const objEv = once(peerC, 'phobia:objectives-updated');
+    hostC.emit('phobia:use-sanity-palinka', { roomId: lobbyRoom, slot: 1 });
+    const obj = await objEv;
+    assert.strictEqual(obj.objectives[0].done, true, 'objective detected by server');
+    assert.strictEqual(obj.primary.done, false);
+    client3.disconnect();
+    console.log('  [PASS] Step 9c: lobby settings, late-join snapshot, item sync, hide, objectives.');
 
     // ------------------------------------------------------------------------
     // Step 10: Journal Verdict Submission & SQLite Persistence Verification

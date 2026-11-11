@@ -10,6 +10,15 @@ test('tartalom: házneve korszaktól függ, nincs tiltott név, minden egység �
   assert.deepStrictEqual(c.buildings.house.names.map((n) => n.name), ['Viskó', 'Lakótelepi lakás']);
   assert.ok(!JSON.stringify(c).includes('Putri'));
   assert.strictEqual(c.epochs.length, 5);
+  assert.deepStrictEqual(c.epochs.map((e) => e.name), ['Telepi Kezdet', 'Vasgyári Virágkor', 'Avasi Lakótelep', 'Miskolci Nagyváros', 'Cyber-Miskolc']);
+  assert.deepStrictEqual(c.epochs[1].cost, { iron: 300, food: 200 });
+  assert.strictEqual(c.epochs[1].researchTime, 45);
+  assert.deepStrictEqual(c.units.scavenger.cost, { food: 50 });
+  assert.strictEqual(c.units.scavenger.buildTime, 15);
+  assert.deepStrictEqual(c.demolish, { maxRefund: 0.5, minRefund: 0.35, holdMs: 1500 });
+  assert.ok(c.buildings.tavern.trains.includes('infiltrator'));
+  assert.strictEqual(c.units.infiltrator.class, 'spy');
+  assert.strictEqual(c.units.civilian, undefined);
   for (const [id, u] of Object.entries(c.units)) for (const f of ['name', 'description', 'cost', 'buildTime', 'epoch', 'producer', 'hp', 'attack', 'range', 'speed', 'armor', 'sight', 'class']) assert.ok(u[f] !== undefined, `${id}.${f}`);
   for (const [id, b] of Object.entries(c.buildings)) for (const f of ['name', 'description', 'cost', 'buildTime', 'epoch', 'hp', 'size']) assert.ok(b[f] !== undefined, `${id}.${f}`);
   for (const [id, u] of Object.entries(c.units)) assert.ok(c.buildings[u.producer].trains.includes(id), `${id} gyártó`);
@@ -19,15 +28,59 @@ test('ellenszerek: a szorzók pontosan érvényesülnek', () => {
   const m = makeMatch();
   const mk = (k, o = 0) => m.createUnit(o, k, 30, 30);
   const loss = (att, tgt) => { const before = tgt.hp; m.strike(att, tgt); return before - tgt.hp; };
-  near(loss(mk('brawler'), mk('knife', 1)), 12 * 1.75); // nehéz > könnyű
-  near(loss(mk('slingshot'), mk('brawler', 1)), 6 * 1.75 * 0.7); // lövész > nehéz (páncél 0.3)
+  near(loss(mk('brawler'), mk('knife', 1)), 12 * 1.5); // nehéz > könnyű
+  near(loss(mk('slingshot'), mk('brawler', 1)), 8 * 1.75 * 0.6); // lövész > nehéz (páncél 0.4)
   near(loss(mk('horseWagon'), mk('slingshot', 1)), 8 * 1.75); // gyors jármű > lövész
+  near(loss(mk('knife'), mk('slingshot', 1)), 7 * 1.4); // könnyű > lövész
   near(loss(mk('knife'), mk('ram', 1)), 7 * 2 * 0.8); // könnyű közelharcos > ostrom (páncél 0.2)
+  near(loss(mk('ram'), mk('horseWagon', 1)), 30 * 3); // ostrom > gyors jármű
   near(loss(mk('knife'), mk('knife', 1)), 7); // semleges
-  near(loss(mk('knife'), mk('brawler', 1)), 7 * 0.7); // ellenszer nélkül, csak páncél
+  near(loss(mk('knife'), mk('brawler', 1)), 7 * 0.6); // ellenszer nélkül, csak páncél
+  assert.strictEqual(C.UNITS.brawler.armor, 0.4);
+  assert.strictEqual(C.UNITS.brawler.speed, 2.1);
   const house = m.placeBuilding(1, 'house', 40, 40, true);
   near(loss(mk('ram'), house), 30 * 3); // ostrom > épület
   near(loss(mk('knife'), m.placeBuilding(1, 'house', 44, 40, true)), 7); // nem ostrom
+});
+
+test('Cigány asszony: drága, 3. korszakos kocsmai lövész, a fapapucs a közeli második ellenfélre pattan', () => {
+  const def = C.UNITS.ciganyAsszony;
+  assert.strictEqual(def.name, 'Cigány asszony');
+  assert.strictEqual(def.producer, 'tavern');
+  assert.ok(C.BUILDINGS.tavern.trains.includes('ciganyAsszony'));
+  const total = (c) => Object.values(c).reduce((a, b) => a + b, 0);
+  assert.ok(total(def.cost) >= 2.5 * total(C.UNITS.brawler.cost));
+  const ranged = Object.values(C.UNITS).filter((u) => u.class === 'ranged' && u !== def);
+  for (const u of ranged) assert.ok(def.attack / def.cooldown > u.attack / u.cooldown && def.hp > u.hp);
+
+  const m = makeMatch();
+  const p = m.players[0];
+  rich(m, 0);
+  const [x, y] = freeSpot(m, 0, 2);
+  const tav = m.placeBuilding(0, 'tavern', x, y, true);
+  p.epoch = 2;
+  assert.strictEqual(m.command(0, { type: 'train', buildingId: tav.id, unit: 'ciganyAsszony' }).ok, false);
+  p.epoch = 3;
+  const iron = p.res.iron;
+  assert.strictEqual(m.command(0, { type: 'train', buildingId: tav.id, unit: 'ciganyAsszony' }).ok, true);
+  assert.strictEqual(p.res.iron, iron - def.cost.iron);
+
+  p.epoch = 1;
+  const a = m.createUnit(0, 'ciganyAsszony', 30, 30);
+  const t = m.createUnit(1, 'knife', 35, 30);
+  const t2 = m.createUnit(1, 'knife', 37, 30);
+  const far = m.createUnit(1, 'knife', 35, 34);
+  m.buildHash();
+  m.events.length = 0;
+  m.strike(a, t);
+  near(t.maxHp - t.hp, 20);
+  near(t2.maxHp - t2.hp, 20 * 0.5);
+  assert.strictEqual(far.hp, far.maxHp);
+  const proj = m.events.map((e) => e.w).filter((w) => w.e === 'proj');
+  assert.deepStrictEqual(proj.map((w) => [w.k, w.rb, w.x, w.tx]), [['ciganyAsszony', undefined, 30, 35], ['ciganyAsszony', 1, 35, 37]]);
+  m.events.length = 0;
+  m.strike(m.createUnit(0, 'airgunner', 30, 30), t);
+  assert.strictEqual(m.events.filter((e) => e.w.e === 'proj').length, 1); // más lövész nem pattint
 });
 
 test('korszak-szorzók és Vajda-aura módosítja a sebzést', () => {
@@ -55,7 +108,8 @@ test('gyűjtés és lerakodás: nyersanyag nő, statisztika számol, a MÉH tele
   stepN(m, 900);
   assert.ok(p.res.iron > before, `vas ${before} -> ${p.res.iron}`);
   assert.ok(p.stats.gathered >= p.res.iron - before);
-  assert.ok(node.a < 1600);
+  assert.ok(node.a < 2400);
+  assert.ok([...m.nodes.values()].every((n) => n.a >= 1500 && n.a <= 3000));
   // lerakodó hely szerint
   const tc = ownB(m, 0, 'townCenter')[0];
   const [sx, sy] = freeSpot(m, 0, 2);
@@ -132,9 +186,10 @@ test('korszakváltás: költség, kutatási idő, szorzók, élőerő skálázá
   const s = own(m, 0, 'scavenger')[0];
   const hp = s.maxHp;
   assert.strictEqual(m.command(0, { type: 'advance-epoch' }).ok, true);
-  assert.strictEqual(p.res.food, 5000 - 300);
+  assert.strictEqual(p.res.food, 5000 - 200);
+  assert.strictEqual(p.res.iron, 5000 - 300);
   assert.strictEqual(m.command(0, { type: 'advance-epoch' }).ok, false); // már kutat
-  stepN(m, 30 * 10 - 1);
+  stepN(m, 45 * 10 - 1);
   assert.strictEqual(p.epoch, 1);
   m.step();
   assert.strictEqual(p.epoch, 2);
