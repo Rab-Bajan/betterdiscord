@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { makeMatch, own, ownB } = require('./helpers');
+const { makeMatch, own, ownB, freeSpot } = require('./helpers');
 
 test('a nehéz MI bázist épít, sereget képez és támad egy passzív ellenfél ellen', () => {
   const m = makeMatch({ seed: 21, ai: true, players: [{ name: 'Gép', team: 0, isAi: true, difficulty: 'hard' }, { name: 'Ember', team: 1 }] });
@@ -55,4 +55,21 @@ test('az MI nem csal: ugyanazt a parancsutat használja, ezért érvénytelen pa
   assert.strictEqual(ai.cmd({ type: 'attack', unitIds: [own(m, 0)[0].id], target: { entityId: foe.id } }).ok, false); // látótéren kívül
   // easy/medium nem kap gyűjtési bónuszt
   assert.strictEqual(m.players[0].gatherBonus, 1);
+});
+
+test('az MI a kocsmában néha Cigány asszonyt képez, de csak réztartalékból', () => {
+  const m = makeMatch({ seed: 2, ai: true, players: [{ name: 'A', team: 0, isAi: true, difficulty: 'hard' }, { name: 'B', team: 1 }] });
+  const me = m.players[0];
+  me.epoch = 3;
+  const [x, y] = freeSpot(m, 0, 2);
+  const tav = m.placeBuilding(0, 'tavern', x, y, true);
+  const blds = { done: new Map([['tavern', [tav]]]) };
+  m.tick = (4 - (tav.id % 4)) % 4;
+  Object.assign(me.res, { iron: 1000, food: 1000, wood: 1000, copper: 200 });
+  m.ais[0].production(me, {}, blds);
+  assert.strictEqual(tav.q[0].u, 'brawler');
+  me.res.copper = 300;
+  m.ais[0].production(me, {}, blds);
+  assert.strictEqual(tav.q[1].u, 'ciganyAsszony');
+  assert.strictEqual(me.res.copper, 200);
 });

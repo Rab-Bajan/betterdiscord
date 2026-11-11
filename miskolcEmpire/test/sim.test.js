@@ -43,6 +43,46 @@ test('ellenszerek: a szorzók pontosan érvényesülnek', () => {
   near(loss(mk('knife'), m.placeBuilding(1, 'house', 44, 40, true)), 7); // nem ostrom
 });
 
+test('Cigány asszony: drága, 3. korszakos kocsmai lövész, a fapapucs a közeli második ellenfélre pattan', () => {
+  const def = C.UNITS.ciganyAsszony;
+  assert.strictEqual(def.name, 'Cigány asszony');
+  assert.strictEqual(def.producer, 'tavern');
+  assert.ok(C.BUILDINGS.tavern.trains.includes('ciganyAsszony'));
+  const total = (c) => Object.values(c).reduce((a, b) => a + b, 0);
+  assert.ok(total(def.cost) >= 2.5 * total(C.UNITS.brawler.cost));
+  const ranged = Object.values(C.UNITS).filter((u) => u.class === 'ranged' && u !== def);
+  for (const u of ranged) assert.ok(def.attack / def.cooldown > u.attack / u.cooldown && def.hp > u.hp);
+
+  const m = makeMatch();
+  const p = m.players[0];
+  rich(m, 0);
+  const [x, y] = freeSpot(m, 0, 2);
+  const tav = m.placeBuilding(0, 'tavern', x, y, true);
+  p.epoch = 2;
+  assert.strictEqual(m.command(0, { type: 'train', buildingId: tav.id, unit: 'ciganyAsszony' }).ok, false);
+  p.epoch = 3;
+  const iron = p.res.iron;
+  assert.strictEqual(m.command(0, { type: 'train', buildingId: tav.id, unit: 'ciganyAsszony' }).ok, true);
+  assert.strictEqual(p.res.iron, iron - def.cost.iron);
+
+  p.epoch = 1;
+  const a = m.createUnit(0, 'ciganyAsszony', 30, 30);
+  const t = m.createUnit(1, 'knife', 35, 30);
+  const t2 = m.createUnit(1, 'knife', 37, 30);
+  const far = m.createUnit(1, 'knife', 35, 34);
+  m.buildHash();
+  m.events.length = 0;
+  m.strike(a, t);
+  near(t.maxHp - t.hp, 20);
+  near(t2.maxHp - t2.hp, 20 * 0.5);
+  assert.strictEqual(far.hp, far.maxHp);
+  const proj = m.events.map((e) => e.w).filter((w) => w.e === 'proj');
+  assert.deepStrictEqual(proj.map((w) => [w.k, w.rb, w.x, w.tx]), [['ciganyAsszony', undefined, 30, 35], ['ciganyAsszony', 1, 35, 37]]);
+  m.events.length = 0;
+  m.strike(m.createUnit(0, 'airgunner', 30, 30), t);
+  assert.strictEqual(m.events.filter((e) => e.w.e === 'proj').length, 1); // más lövész nem pattint
+});
+
 test('korszak-szorzók és Vajda-aura módosítja a sebzést', () => {
   const m = makeMatch();
   m.players[0].epoch = 3;

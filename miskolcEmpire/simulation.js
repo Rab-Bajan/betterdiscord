@@ -408,7 +408,7 @@ class EmpireMatch {
     }
   }
 
-  nearestEnemyUnit(team, x, y, r, preferMilitary) {
+  nearestEnemyUnit(team, x, y, r, preferMilitary, skip = null) {
     const rows = Math.ceil(this.h / CELL);
     const x0 = Math.max(0, Math.floor((x - r) / CELL));
     const x1 = Math.min(this.cw - 1, Math.floor((x + r) / CELL));
@@ -419,7 +419,7 @@ class EmpireMatch {
     for (let cy = y0; cy <= y1; cy++) {
       for (let cx = x0; cx <= x1; cx++) {
         for (const e of this.cells[cy * this.cw + cx]) {
-          if (e.dead || this.players[e.o].team === team || this.disguisedTo(team, e)) continue;
+          if (e === skip || e.dead || this.players[e.o].team === team || this.disguisedTo(team, e)) continue;
           const d = Math.hypot(e.x - x, e.y - y);
           if (d > r) continue;
           const score = d + (preferMilitary && e.def.class === 'worker' ? 3 : 0);
@@ -531,19 +531,30 @@ class EmpireMatch {
     return 0;
   }
 
+  strikeDamage(a, t) {
+    const isUnit = !t.size;
+    const targetClass = isUnit ? t.def.class : 'building';
+    const counter = (COUNTERS[a.def.class] && COUNTERS[a.def.class][targetClass]) || 1;
+    const armor = isUnit ? Math.min(0.7, (t.def.armor || 0) + this.heroResist(t.o, t.x, t.y)) : 0;
+    return Math.max(1, a.def.attack * this.atkMult(this.players[a.o]) * counter * (1 - armor));
+  }
+
   strike(a, t) {
     const isUnit = !t.size;
     const aDef = a.def;
-    const p = this.players[a.o];
-    const targetClass = isUnit ? t.def.class : 'building';
-    const counter = (COUNTERS[aDef.class] && COUNTERS[aDef.class][targetClass]) || 1;
-    const armor = isUnit ? Math.min(0.7, (t.def.armor || 0) + this.heroResist(t.o, t.x, t.y)) : 0;
-    const dmg = Math.max(1, aDef.attack * this.atkMult(p) * counter * (1 - armor));
     if (aDef.range > 2) {
       this.event({ e: 'proj', a: a.id, x: r1(a.x), y: r1(a.y), tx: r1(isUnit ? t.x : t.x + t.size / 2), ty: r1(isUnit ? t.y : t.y + t.size / 2), k: a.k }, { pos: [[a.x, a.y], [t.x, t.y]] });
     }
     a.combatT = this.tick;
-    this.damage(a.o, t, dmg, a.id);
+    this.damage(a.o, t, this.strikeDamage(a, t), a.id);
+    // Ricochet: the projectile bounces from the struck unit to the nearest other enemy unit
+    if (aDef.ricochet && isUnit) {
+      const t2 = this.nearestEnemyUnit(this.players[a.o].team, t.x, t.y, aDef.ricochet.radius, true, t);
+      if (t2) {
+        this.event({ e: 'proj', a: a.id, x: r1(t.x), y: r1(t.y), tx: r1(t2.x), ty: r1(t2.y), k: a.k, rb: 1 }, { pos: [[t.x, t.y], [t2.x, t2.y]] });
+        this.damage(a.o, t2, this.strikeDamage(a, t2) * aDef.ricochet.mult, a.id);
+      }
+    }
   }
 
   damage(attackerOwner, t, dmg, attackerId = null) {

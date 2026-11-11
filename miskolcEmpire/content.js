@@ -51,7 +51,7 @@ const BUILDINGS = {
   },
   tavern: {
     name: 'Kocsma', description: 'Itt toboroznak közelharcosokat. A törzsvendégek közelében gyorsabban megy a gyűjtés.',
-    cost: { wood: 120, iron: 40 }, buildTime: 30, epoch: 1, size: 2, hp: 700, sight: 6, trains: ['knife', 'brawler', 'infiltrator'], popCap: 0, aura: { radius: 6, gather: 0.1 }
+    cost: { wood: 120, iron: 40 }, buildTime: 30, epoch: 1, size: 2, hp: 700, sight: 6, trains: ['knife', 'brawler', 'infiltrator', 'ciganyAsszony'], popCap: 0, aura: { radius: 6, gather: 0.1 }
   },
   barracks: {
     name: 'Bódé', description: 'Lövészek és hétköznapi harcosok bódéja. Cigi nincs, csúzli van.',
@@ -105,6 +105,11 @@ const UNITS = {
     name: 'Vándor Kém', description: 'Az ellenség szemében csak egy ráérős civil. A MÉH telepnél csendben dézsmálja a készleteket, és mindent jelent.',
     cost: { copper: 250, food: 150 }, buildTime: 30, epoch: 2, producer: 'tavern', hp: 60, attack: 3, range: 1, speed: 3.2, armor: 0, sight: 9, class: 'spy', cooldown: 1,
     stealth: true, siphon: { iron: 5, copper: 2, everySec: 3 }
+  },
+  ciganyAsszony: {
+    name: 'Cigány asszony', description: 'A telep köztiszteletben álló asszonya: ha felemeli a hangját, a szomszéd utca is elhallgat. A fapapucsa messzire repül, és a mellette álló is kap belőle.',
+    cost: { food: 120, iron: 80, copper: 100 }, buildTime: 32, epoch: 3, producer: 'tavern', hp: 150, attack: 20, range: 7, speed: 2.4, armor: 0.25, sight: 9, class: 'ranged', cooldown: 1.4,
+    ricochet: { radius: 3, mult: 0.5 }
   },
   horseWagon: {
     name: 'Lókupec', description: 'Gyors szekér, jó felderítésre. Mindig tud valakit, aki tud valakit.',
