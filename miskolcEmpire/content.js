@@ -38,7 +38,11 @@ const BUILDINGS = {
   townCenter: {
     name: 'Vajda Háza', description: 'A telep szíve: itt fő a bogrács, innen indul minden. Munkásokat képez, mindent átvesz és korszakot vált.',
     cost: { wood: 300, iron: 200, copper: 100 }, buildTime: 60, epoch: 2, size: 3, hp: 1500, sight: 10,
-    trains: ['scavenger', 'builder', 'elder'], dropOff: ['iron', 'copper', 'food', 'wood'], popCap: 15, researches: true
+    trains: ['scavenger', 'builder', 'elder'], dropOff: ['iron', 'copper', 'food', 'wood'], popCap: 15, researches: true,
+    upgrades: [
+      { cost: { wood: 200, iron: 150, copper: 50 }, buildTime: 40, epoch: 2, popCap: 22, hp: 1800 },
+      { cost: { wood: 300, iron: 250, copper: 150 }, buildTime: 50, epoch: 3, popCap: 30, hp: 2200 }
+    ]
   },
   scrapYard: {
     name: 'MÉH Telep', description: 'Vas és réz átvétele, mérlegelés, szó nélkül. Közelebb van, mint a Vajda Háza.',
@@ -47,7 +51,13 @@ const BUILDINGS = {
   house: {
     name: 'Viskó', names: [{ fromEpoch: 1, name: 'Viskó' }, { fromEpoch: 3, name: 'Lakótelepi lakás' }],
     description: 'Fedél a fej fölött, plusz hely a lakosoknak. Későbbi korszakban panelba költözik.',
-    cost: { wood: 60 }, buildTime: 15, epoch: 1, size: 2, hp: 300, sight: 5, popCap: 8
+    cost: { wood: 60 }, buildTime: 15, epoch: 1, size: 2, hp: 300, sight: 5, popCap: 8,
+    // upgrades[i] a(z) i+2. szint: popCap és hp a szint teljes értéke, cost/buildTime/epoch a fejlesztésé
+    upgrades: [
+      { cost: { wood: 70, iron: 20 }, buildTime: 15, epoch: 1, popCap: 12, hp: 400 },
+      { cost: { wood: 90, iron: 40, copper: 20 }, buildTime: 20, epoch: 2, popCap: 17, hp: 520 },
+      { cost: { wood: 110, iron: 60, copper: 40 }, buildTime: 25, epoch: 3, popCap: 23, hp: 650 }
+    ]
   },
   tavern: {
     name: 'Kocsma', description: 'Itt toboroznak közelharcosokat. A törzsvendégek közelében gyorsabban megy a gyűjtés.',
@@ -134,7 +144,11 @@ const UNITS = {
   }
 };
 
+// Alapértelmezett térképméret játékosszám szerint, ha a létrehozó nem választott
 const MAP_SIZES = { 2: 64, 3: 88, 4: 88 };
+// Választható térképméretek (csempe oldalhossz)
+const MAP_SIZE_OPTIONS = { tiny: 56, small: 64, medium: 88, large: 112, huge: 136 };
+const MAP_SIZE_IDS = Object.keys(MAP_SIZE_OPTIONS);
 const DIFFICULTIES = ['easy', 'medium', 'hard'];
 const PLAYER_COLORS = ['#e74c3c', '#3498db', '#2ecc71', '#f1c40f'];
 const NODE_KINDS = { iron: 'iron', copper: 'copper', food: 'food', wood: 'wood' };
@@ -147,11 +161,11 @@ function getContent() {
   return JSON.parse(JSON.stringify({
     tickHz: TICK_HZ, popCapMax: POP_CAP_MAX, maxUnitIds: MAX_UNIT_IDS, maxQueue: MAX_QUEUE,
     resources: RESOURCE_INFO, epochs: EPOCHS, buildings: BUILDINGS, units: UNITS, counters: COUNTERS,
-    mapSizes: MAP_SIZES, difficulties: DIFFICULTIES, colors: PLAYER_COLORS, demolish: DEMOLISH
+    mapSizes: MAP_SIZES, mapSizeOptions: MAP_SIZE_OPTIONS, difficulties: DIFFICULTIES, colors: PLAYER_COLORS, demolish: DEMOLISH
   }));
 }
 
 module.exports = {
-  TICK_HZ, POP_CAP_MAX, MAX_UNIT_IDS, MAX_QUEUE, RESOURCES, EPOCHS, COUNTERS, DEMOLISH, BUILDINGS, UNITS, MAP_SIZES,
+  TICK_HZ, POP_CAP_MAX, MAX_UNIT_IDS, MAX_QUEUE, RESOURCES, EPOCHS, COUNTERS, DEMOLISH, BUILDINGS, UNITS, MAP_SIZES, MAP_SIZE_OPTIONS, MAP_SIZE_IDS,
   DIFFICULTIES, PLAYER_COLORS, NODE_KINDS, own, isBuildingId, isUnitId, getContent
 };

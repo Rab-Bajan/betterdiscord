@@ -115,6 +115,19 @@ class AiController {
     return false;
   }
 
+  // Kész viskó fejlesztése (egy egyszerre); a szabad építő besegít
+  tryUpgrade(me, mine, blds, type) {
+    if (blds.all.some((b) => b.k === type && b.up)) return false;
+    for (const b of blds.all) {
+      if (b.k !== type || !b.complete) continue;
+      const next = this.m.nextUpgrade(b);
+      if (!next || (next.epoch || 1) > me.epoch || !this.m.canAfford(me, next.cost)) continue;
+      const free = mine.builders.find((u) => !u.order);
+      return this.cmd({ type: 'upgrade', buildingId: b.id, ...(free ? { unitIds: [free.id] } : {}) }).ok;
+    }
+    return false;
+  }
+
   construction(me, mine, blds) {
     const p = this.params;
     // Befejezetlen épületek folytatása
@@ -127,7 +140,10 @@ class AiController {
     const has = (t) => blds.count.get(t) || 0;
     const queued = blds.all.reduce((n, b) => n + b.q.length, 0);
     const houseNeeded = me.popCap < 100 && me.pop + queued * 0 >= me.popCap - p.houseBuffer && !unfinished.some((b) => b.k === 'house');
+    // sok viskó mellett inkább fejleszt, különben épít, és ha építeni nem tud, fejleszt
+    if (houseNeeded && has('house') >= 3 && this.tryUpgrade(me, mine, blds, 'house')) return;
     if (houseNeeded && this.tryBuild(me, mine, blds, 'house')) return;
+    if (houseNeeded && this.tryUpgrade(me, mine, blds, 'house')) return;
     if (me.popCap - me.pop <= p.houseBuffer + 2 && has('house') === 0 && this.tryBuild(me, mine, blds, 'house')) return;
     if (mine.workers.length >= 8 && me.res.wood >= 160 && has('scrapYard') < 1 && this.tryBuild(me, mine, blds, 'scrapYard')) return;
     if (has('barracks') < 1 && this.tryBuild(me, mine, blds, 'barracks')) return;
