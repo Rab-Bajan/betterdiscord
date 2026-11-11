@@ -4,8 +4,11 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node --test analysis/test/*.test.js game/test/*.test.js miskolcEmpire/test/*.test.js",
     "start": "node server.js",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test --import ./test/support/isolatedDb.cjs analysis/test/*.test.js game/test/*.test.js miskolcEmpire/test/*.test.js test/*.test.js \"test/unit/**/*.test.ts\"",
+    "test:unit": "node --test --import ./test/support/isolatedDb.cjs \"test/unit/**/*.test.ts\"",
+    "test:e2e:phobia": "node --import ./test/support/isolatedDb.cjs test_phobia_backend.js",
     "build:openings": "node scripts/buildOpenings.js"
   },
   "keywords": [],
@@ -23,5 +26,11 @@
     "socket.io": "^4.8.4",
     "socket.io-client": "^4.8.4",
     "stockfish": "^19.0.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/express": "^5.0.6",
+    "@types/node": "^24.19.2",
+    "typescript": "5.9"
   }
 }
