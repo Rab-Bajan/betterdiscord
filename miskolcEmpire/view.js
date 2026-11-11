@@ -28,7 +28,7 @@ function resetView(match, idx, view, snapshot) {
   }
   for (const b of snapshot.buildings) {
     const e = match.buildings.get(b.i);
-    view.known.set(b.i, { seen: tick, hp: b.hp, hpT: tick, bp: b.bp, qVer: e.qVer, raVer: e.qVer });
+    view.known.set(b.i, { seen: tick, hp: b.hp, hpT: tick, bp: b.bp, qVer: e.qVer, raVer: e.qVer, lv: b.lv, up: b.up });
   }
   for (const n of snapshot.nodes) view.nodes.set(n.i, { a: n.a, t: tick });
   view.rSig = JSON.stringify(snapshot.res);
@@ -111,7 +111,7 @@ function buildTick(match, idx, view) {
     const rec = known.get(b.id);
     if (!rec) {
       bs.push(match.buildingFull(b));
-      known.set(b.id, { seen: tick, hp: Math.max(1, Math.round(b.hp)), hpT: tick, bp: b.bpShown, qVer: b.qVer, raVer: b.raVer });
+      known.set(b.id, { seen: tick, hp: Math.max(1, Math.round(b.hp)), hpT: tick, bp: b.bpShown, qVer: b.qVer, raVer: b.raVer, lv: b.lv, up: b.upShown });
       continue;
     }
     rec.seen = tick;
@@ -119,6 +119,8 @@ function buildTick(match, idx, view) {
     const hp = Math.max(1, Math.round(b.hp));
     if (hp !== rec.hp && tick - rec.hpT >= HP_EVERY) { d = { i: b.id, hp }; rec.hp = hp; rec.hpT = tick; }
     if (b.bpShown !== rec.bp) { d = d || { i: b.id }; d.bp = b.bpShown; rec.bp = b.bpShown; }
+    if (b.lv !== rec.lv) { d = d || { i: b.id }; d.lv = b.lv; d.mh = Math.round(b.maxHp); d.hp = hp; rec.lv = b.lv; rec.hp = hp; rec.hpT = tick; }
+    if (b.upShown !== rec.up) { d = d || { i: b.id }; d.up = b.upShown; rec.up = b.upShown; }
     if (b.qVer !== rec.qVer) { d = d || { i: b.id }; d.q = b.qCache; d.ra = b.ra; rec.qVer = b.qVer; }
     if (d) bs.push(d);
   }

@@ -317,3 +317,73 @@ test('kiesés épületvesztéssel: az ember megfigyelő lesz, az MI nem; az MI n
   assert.strictEqual(m.status, 'ended');
   assert.strictEqual(m.winnerTeam, 2);
 });
+
+test('épületfejlesztés: minden szint több lakóhelyet ad, építővel gyorsabb, a bontás a fejlesztést is visszatéríti', () => {
+  const lvls = C.BUILDINGS.house.upgrades;
+  for (let i = 0; i < lvls.length; i++) assert.ok(lvls[i].popCap > (i ? lvls[i - 1].popCap : C.BUILDINGS.house.popCap), 'szintenként nő');
+  const m = makeMatch();
+  const p = m.players[0];
+  const [x, y] = freeSpot(m, 0, 2);
+  const b = m.placeBuilding(0, 'house', x, y, true);
+  m.recomputePopCap(p);
+  const cap1 = p.popCap;
+  Object.assign(p.res, { wood: 5000, iron: 5000, copper: 5000, food: 5000 });
+  const before = { ...p.res };
+  assert.strictEqual(m.command(0, { type: 'upgrade', buildingId: b.id }).ok, true);
+  assert.strictEqual(p.res.wood, before.wood - lvls[0].cost.wood);
+  assert.strictEqual(m.command(0, { type: 'upgrade', buildingId: b.id }).ok, false, 'egyszerre csak egy fejlesztés');
+  // magától buildTime alatt kész
+  stepN(m, lvls[0].buildTime * C.TICK_HZ + 1);
+  assert.strictEqual(b.lv, 2);
+  assert.strictEqual(p.popCap, cap1 - C.BUILDINGS.house.popCap + lvls[0].popCap);
+  assert.strictEqual(b.maxHp, lvls[0].hp);
+  // a 3. szinthez 2. korszak kell
+  assert.match(m.command(0, { type: 'upgrade', buildingId: b.id }).error, /korszak/);
+  p.epoch = 3;
+  // építővel gyorsabb
+  const u = m.createUnit(0, 'builder', x - 0.4, y + 0.5);
+  assert.strictEqual(m.command(0, { type: 'upgrade', buildingId: b.id, unitIds: [u.id] }).ok, true);
+  let t = 0;
+  while (b.lv === 2 && t < 2000) { m.step(); t++; }
+  assert.strictEqual(b.lv, 3);
+  assert.ok(t < lvls[1].buildTime * C.TICK_HZ * 0.75, `építővel ${t} tick`);
+  // megszakítás: teljes visszatérítés
+  const w0 = p.res.wood;
+  assert.strictEqual(m.command(0, { type: 'upgrade', buildingId: b.id }).ok, true);
+  assert.strictEqual(m.command(0, { type: 'cancel-upgrade', buildingId: b.id }).ok, true);
+  assert.strictEqual(p.res.wood, w0);
+  assert.strictEqual(b.up, null);
+  // legfelső szint után nincs tovább
+  stepN(m, 1);
+  assert.strictEqual(m.command(0, { type: 'upgrade', buildingId: b.id }).ok, true);
+  stepN(m, lvls[2].buildTime * C.TICK_HZ + 1);
+  assert.strictEqual(b.lv, 4);
+  assert.match(m.command(0, { type: 'upgrade', buildingId: b.id }).error, /legmagasabb/);
+  // bontásnál a fejlesztések ára is visszajár
+  const plain = m.placeBuilding(0, 'house', ...freeSpot(m, 0, 2), true);
+  assert.ok(m.demolishRefund(b).wood > m.demolishRefund(plain).wood);
+  // nem fejleszthető épület
+  const yard = m.placeBuilding(0, 'scrapYard', ...freeSpot(m, 0, 2), true);
+  assert.match(m.command(0, { type: 'upgrade', buildingId: yard.id }).error, /nem fejleszthető/);
+});
+
+test('épületfejlesztés a nézetben: szint, max élet és haladás megy ki a kliensnek', () => {
+  const m = makeMatch();
+  const p = m.players[0];
+  const b = m.placeBuilding(0, 'house', ...freeSpot(m, 0, 2), true);
+  Object.assign(p.res, { wood: 5000, iron: 5000, copper: 5000 });
+  const view = createView();
+  resetView(m, 0, view, m.snapshot(0));
+  assert.strictEqual(m.snapshot(0).buildings.find((x) => x.i === b.id).lv, 1);
+  m.command(0, { type: 'upgrade', buildingId: b.id });
+  const seen = [];
+  for (let i = 0; i < C.BUILDINGS.house.upgrades[0].buildTime * C.TICK_HZ + 2; i++) {
+    m.step();
+    const tk = buildTick(m, 0, view);
+    const d = ((tk && tk.b) || []).find((x) => x.i === b.id);
+    if (d) seen.push(d);
+  }
+  assert.ok(seen.some((d) => d.up > 0 && d.up < 100), 'haladás');
+  const done = seen.find((d) => d.lv === 2);
+  assert.ok(done && done.mh === C.BUILDINGS.house.upgrades[0].hp && done.up === -1);
+});

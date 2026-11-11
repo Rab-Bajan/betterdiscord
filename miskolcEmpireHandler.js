@@ -40,7 +40,7 @@ function setupMiskolcEmpire(io, users, opts = {}) {
       roomId: s.roomId, channelId: s.channelId, name: s.name, mode: s.mode, status: s.status, active: s.status !== 'ended',
       startedBy: s.startedBy, host: s.host,
       players: s.players.map((p) => ({ idx: p.idx, name: p.name, team: p.team, color: p.color, isAi: p.isAi, connected: p.isAi ? true : p.connected })),
-      maxPlayers: s.maxPlayers, difficulty: s.difficulty
+      maxPlayers: s.maxPlayers, difficulty: s.difficulty, mapSize: s.mapSize || null
     };
   }
 
@@ -147,7 +147,8 @@ function setupMiskolcEmpire(io, users, opts = {}) {
     s.match = new EmpireMatch({
       seed: opts.seed ?? crypto.randomBytes(4).readUInt32LE(0),
       players: s.players.map((p) => ({ name: p.name, team: p.team, isAi: p.isAi, difficulty: p.difficulty || difficulty, color: p.color })),
-      createAi
+      createAi,
+      mapSize: s.mapSize || null
     });
     s.status = 'playing';
     s.lastService = now();
@@ -334,13 +335,18 @@ function setupMiskolcEmpire(io, users, opts = {}) {
         if (!Number.isInteger(d.maxPlayers) || d.maxPlayers < 2 || d.maxPlayers > 4) return fail('Érvénytelen játékosszám.');
         maxPlayers = d.maxPlayers;
       }
+      let mapSize = null;
+      if (d.mapSize !== undefined && d.mapSize !== null) {
+        if (!content.MAP_SIZE_IDS.includes(d.mapSize)) return fail('Ismeretlen térképméret.');
+        mapSize = d.mapSize;
+      }
       let name = `${String(user.username || 'Vendég').slice(0, 24)} játéka`;
       if (d.name !== undefined) {
         if (typeof d.name !== 'string' || d.name.trim().length === 0 || d.name.length > 40) return fail('Érvénytelen név.');
         name = d.name.trim();
       }
       const roomId = channelId || `lobby-${crypto.randomBytes(4).toString('hex')}`;
-      const s = { roomId, channelId, name, mode: d.mode, status: 'lobby', difficulty, maxPlayers, startedBy: String(user.username || 'Vendég'), host: 0, players: [], match: null, createdAt: now() };
+      const s = { roomId, channelId, name, mode: d.mode, status: 'lobby', difficulty, maxPlayers, mapSize, startedBy: String(user.username || 'Vendég'), host: 0, players: [], match: null, createdAt: now() };
       sessions.set(roomId, s);
       const p = addHuman(s, socket, user);
       if (d.mode === 'ai') startMatch(s, true, difficulty);
@@ -394,6 +400,10 @@ function setupMiskolcEmpire(io, users, opts = {}) {
       if (s.host !== p.idx) return fail('Csak a házigazda indíthatja el.');
       const difficulty = d.difficulty === undefined ? s.difficulty : d.difficulty;
       if (!content.DIFFICULTIES.includes(difficulty)) return fail('Ismeretlen nehézségi szint.');
+      if (d.mapSize !== undefined && d.mapSize !== null) {
+        if (!content.MAP_SIZE_IDS.includes(d.mapSize)) return fail('Ismeretlen térképméret.');
+        s.mapSize = d.mapSize;
+      }
       if (!startMatch(s, d.fillWithAi === true, difficulty)) return fail('Nincs elég játékos az induláshoz.');
       return { ok: true, roomId: s.roomId, summary: summary(s) };
     });

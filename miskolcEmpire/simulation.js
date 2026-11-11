@@ -37,7 +37,7 @@ const rectDist = (px, py, x0, y0, x1, y1) => Math.hypot(Math.max(x0 - px, px - x
 
 class EmpireMatch {
   // players: [{ name, team, isAi, difficulty, color }]
-  constructor({ seed = 1, players, createAi = null }) {
+  constructor({ seed = 1, players, createAi = null, mapSize = null }) {
     this.seed = seed >>> 0;
     this.rng = createRng(this.seed ^ 0x9e3779b9);
     this.tick = 0;
@@ -55,7 +55,7 @@ class EmpireMatch {
     this.pingCd = new Map();
     this.inStep = false;
 
-    const map = generateMap(this.seed, players.length);
+    const map = generateMap(this.seed, players.length, mapSize);
     this.map = { w: map.w, h: map.h, tiles: map.tiles };
     this.w = map.w;
     this.h = map.h;
@@ -111,9 +111,13 @@ class EmpireMatch {
   pay(p, cost) { for (const k of Object.keys(cost)) p.res[k] -= cost[k]; }
   refund(p, cost) { for (const k of Object.keys(cost)) p.res[k] += cost[k]; }
 
+  // Szintenkénti lakóhely: az 1. szint a def.popCap, a többi a def.upgrades[lv - 2].popCap
+  levelPopCap(b) { return b.lv > 1 ? b.def.upgrades[b.lv - 2].popCap : b.def.popCap || 0; }
+  nextUpgrade(b) { return (b.def.upgrades && b.def.upgrades[b.lv - 1]) || null; }
+
   recomputePopCap(p) {
     let cap = 0;
-    for (const b of this.buildings.values()) if (!b.dead && b.o === p.idx && b.complete) cap += b.def.popCap || 0;
+    for (const b of this.buildings.values()) if (!b.dead && b.o === p.idx && b.complete) cap += this.levelPopCap(b);
     p.popCap = Math.min(POP_CAP_MAX, cap);
   }
 
@@ -215,7 +219,7 @@ class EmpireMatch {
     const b = {
       id: this.nextId++, o: owner, k, def, x, y, size: def.size, hp: complete ? def.hp : Math.max(1, def.hp * 0.1), maxHp: def.hp,
       bp: complete ? 100 : 0, bpF: complete ? 100 : 0, complete: !!complete, q: [], ra: null, cd: 0, dead: false, hitT: -99, bpShown: complete ? 100 : 0, qVer: 0, qCache: [], raVer: 0,
-      workT: -1, workN: 0
+      workT: -1, workN: 0, lv: 1, up: null, upShown: -1
     };
     this.buildings.set(b.id, b);
     for (let yy = y; yy < y + b.size; yy++) for (let xx = x; xx < x + b.size; xx++) this.blocked[yy * this.w + xx] = 1;
@@ -686,7 +690,7 @@ class EmpireMatch {
   // ---------- Építés és javítás ----------
   doBuild(u, o) {
     const b = this.buildings.get(o.target);
-    if (!b || b.dead || (b.complete && b.hp >= b.maxHp - 0.01)) { u.order = null; u.st = 'idle'; this.stopUnit(u); return; }
+    if (!b || b.dead || (b.complete && !b.up && b.hp >= b.maxHp - 0.01)) { u.order = null; u.st = 'idle'; this.stopUnit(u); return; }
     u.st = 'build';
     const d = rectDist(u.x, u.y, b.x, b.y, b.x + b.size, b.y + b.size);
     if (d > 1.4) {
@@ -709,8 +713,22 @@ class EmpireMatch {
         this.event({ e: 'built', i: b.id }, { team: this.players[b.o].team });
       } else b.bp = Math.floor(b.bpF);
     } else {
+      // fejlesztés közben minden építő a saját (csökkenő) részével gyorsítja a magától is haladó munkát
+      if (b.up) b.up.t += share;
       b.hp = Math.min(b.maxHp, b.hp + share * b.maxHp / (b.def.buildTime * TICK_HZ * 2));
     }
+  }
+
+  finishUpgrade(b) {
+    const lv = b.up.lv;
+    const newMax = b.def.upgrades[lv - 2].hp;
+    b.hp = Math.min(newMax, b.hp + Math.max(0, newMax - b.maxHp));
+    b.maxHp = newMax;
+    b.lv = lv;
+    b.up = null;
+    b.upShown = -1;
+    this.recomputePopCap(this.players[b.o]);
+    this.event({ e: 'upgraded', i: b.id, lv }, { team: this.players[b.o].team });
   }
 
   // ---------- Kém: dézsmálás ----------
@@ -753,7 +771,12 @@ class EmpireMatch {
       r = f >= 0.5 ? DEMOLISH.minRefund + (DEMOLISH.maxRefund - DEMOLISH.minRefund) * ((f - 0.5) / 0.5) : DEMOLISH.minRefund * (f / 0.5);
     }
     const out = {};
-    for (const k of Object.keys(b.def.cost)) out[k] = Math.floor(b.def.cost[k] * r + 1e-9);
+    const add = (cost, f) => { for (const k of Object.keys(cost)) out[k] = (out[k] || 0) + cost[k] * f; };
+    add(b.def.cost, r);
+    for (let lv = 2; lv <= b.lv; lv++) add(b.def.upgrades[lv - 2].cost, r);
+    // a félbehagyott fejlesztés ára teljes egészében visszajár
+    if (b.up) add(b.def.upgrades[b.up.lv - 2].cost, 1);
+    for (const k of Object.keys(out)) out[k] = Math.floor(out[k] + 1e-9);
     return out;
   }
 
@@ -800,6 +823,11 @@ class EmpireMatch {
     if (b.cd > 0) b.cd--;
     if (!b.complete) return;
     const p = this.players[b.o];
+    if (b.up) {
+      b.up.t += 1;
+      if (b.up.t >= b.up.total) this.finishUpgrade(b);
+      else b.upShown = Math.min(99, Math.floor((b.up.t / b.up.total) * 100));
+    }
     if (b.q.length) {
       const item = b.q[0];
       item.t++;
@@ -949,7 +977,7 @@ class EmpireMatch {
   }
 
   buildingFull(b) {
-    return { i: b.id, o: b.o, k: b.k, x: b.x, y: b.y, hp: Math.max(1, Math.round(b.hp)), bp: b.bpShown, q: b.qCache, ra: b.ra };
+    return { i: b.id, o: b.o, k: b.k, x: b.x, y: b.y, hp: Math.max(1, Math.round(b.hp)), mh: Math.round(b.maxHp), bp: b.bpShown, q: b.qCache, ra: b.ra, lv: b.lv, up: b.upShown };
   }
 
   resView(p) {
@@ -1119,6 +1147,37 @@ COMMANDS.set('train', (m, p, c) => {
   p.pop++;
   b.q.push({ u: c.unit, t: 0, total: def.buildTime * TICK_HZ });
   m.touchQueue(b);
+  return OK;
+});
+
+// Épület fejlesztése a következő szintre. A fejlesztés magától is halad, a megadott építők gyorsítják.
+COMMANDS.set('upgrade', (m, p, c) => {
+  const b = m.ownBuilding(p, c.buildingId);
+  if (!b || !b.complete) return fail('Érvénytelen épület.');
+  if (b.up) return fail('Ez az épület már fejlesztés alatt áll.');
+  const next = m.nextUpgrade(b);
+  if (!next) return fail(b.def.upgrades ? 'Ez az épület már a legmagasabb szinten van.' : 'Ez az épület nem fejleszthető.');
+  if ((next.epoch || 1) > p.epoch) return fail('Ehhez egy későbbi korszak kell.');
+  let builders = [];
+  if (c.unitIds !== undefined) {
+    const r = m.parseUnits(p, c);
+    if (r.error) return fail(r.error);
+    builders = r.units.filter((u) => u.def.builds);
+  }
+  if (!m.canAfford(p, next.cost)) return fail('Nincs elég nyersanyag.');
+  m.pay(p, next.cost);
+  b.up = { lv: b.lv + 1, t: 0, total: next.buildTime * TICK_HZ };
+  b.upShown = 0;
+  for (const u of builders) m.setOrder(u, { type: 'build', target: b.id });
+  return OK;
+});
+
+COMMANDS.set('cancel-upgrade', (m, p, c) => {
+  const b = m.ownBuilding(p, c.buildingId);
+  if (!b || !b.up) return fail('Nincs folyamatban fejlesztés.');
+  m.refund(p, b.def.upgrades[b.up.lv - 2].cost);
+  b.up = null;
+  b.upShown = -1;
   return OK;
 });
 

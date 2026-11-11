@@ -1,6 +1,6 @@
 // Térkép-generálás: g fű, d föld, r út, c beton, w víz (blokkol), x romok (blokkol)
 const { createRng } = require('./rng');
-const { MAP_SIZES } = require('./content');
+const { MAP_SIZES, MAP_SIZE_OPTIONS } = require('./content');
 
 const BLOCKING = new Set(['w', 'x']);
 
@@ -33,9 +33,9 @@ function floodConnected(tiles, w, h, starts) {
   return starts.every(([sx, sy]) => seen[(sy + 1) * w + sx + 1]);
 }
 
-function attempt(seed, playerCount) {
+function attempt(seed, playerCount, mapSize) {
   const rng = createRng(seed);
-  const size = MAP_SIZES[playerCount] || 64;
+  const size = (Object.prototype.hasOwnProperty.call(MAP_SIZE_OPTIONS, mapSize) && MAP_SIZE_OPTIONS[mapSize]) || MAP_SIZES[playerCount] || 64;
   const w = size;
   const h = size;
   const tiles = new Array(w * h).fill('g');
@@ -92,21 +92,24 @@ function attempt(seed, playerCount) {
     cluster('wood', cx - dir[0] * 6, cy - dir[1] * 2, 5, 1500, 2);
   });
   // Semleges készletek középen és oldalt
+  // nagyobb térképen több szétszórt semleges lelőhely jut (64 és 88 csempénél egy-egy, mint eddig)
+  const extra = Math.max(1, Math.round((w * h) / 6000));
   for (const k of ['iron', 'copper', 'food', 'wood']) {
     cluster(k, w / 2, h / 2, 3, k === 'wood' || k === 'food' ? 2400 : 3000, 6);
-    cluster(k, rng.range(w * 0.3, w * 0.7), rng.range(h * 0.2, h * 0.8), 3, k === 'wood' || k === 'food' ? 1700 : 2100, 4);
+    for (let e = 0; e < extra; e++) cluster(k, rng.range(w * 0.3, w * 0.7) + (e ? rng.range(-w * 0.2, w * 0.2) : 0), rng.range(h * 0.2, h * 0.8), 3, k === 'wood' || k === 'food' ? 1700 : 2100, 4);
   }
   return { w, h, tiles: tiles.join(''), starts, nodes, ok: floodConnected(tiles, w, h, starts) };
 }
 
-function generateMap(seed, playerCount) {
+// mapSize: a MAP_SIZE_OPTIONS egyik kulcsa; ha hiányzik, a játékosszám dönt
+function generateMap(seed, playerCount, mapSize) {
   const count = Math.min(4, Math.max(2, playerCount | 0));
   for (let i = 0; i < 12; i++) {
-    const m = attempt((Number(seed) >>> 0) + i * 7919, count);
+    const m = attempt((Number(seed) >>> 0) + i * 7919, count, mapSize);
     if (m.ok) return m;
   }
   // Végső tartalék: üres fűtérkép
-  const m = attempt(1, count);
+  const m = attempt(1, count, mapSize);
   const size = m.w;
   const tiles = 'g'.repeat(size * size);
   return { ...m, tiles, ok: true };
