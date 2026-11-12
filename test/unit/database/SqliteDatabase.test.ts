@@ -12,6 +12,9 @@ const EXPECTED_TABLES = [
   'channel_messages',
   'direct_messages',
   'dm_reports',
+  'miskolc_player_stats',
+  'miskolc_rooms',
+  'miskolc_world_structures',
   'phobia_match_history',
   'phobia_profiles',
   'sqlite_sequence'
@@ -22,7 +25,9 @@ const EXPECTED_INDEXES = [
   'idx_calls_dm',
   'idx_channel_messages_channel',
   'idx_dm_key_created',
-  'idx_dm_reports_status'
+  'idx_dm_reports_status',
+  'idx_miskolc_player_stats_room',
+  'idx_miskolc_world_structures_room'
 ];
 
 function names(db: SqliteDatabase, type: string): string[] {
@@ -94,7 +99,7 @@ test('migrator can be re-run on an open connection without changes', () => {
   db.close();
 });
 
-test('migrations are listed in legacy order', () => {
+test('migrations are listed in legacy order, additions last', () => {
   assert.deepEqual(
     MIGRATIONS.map((m) => m.name),
     [
@@ -106,7 +111,8 @@ test('migrations are listed in legacy order', () => {
       'calls',
       'dm_reports',
       'auth_tokens',
-      'phobia'
+      'phobia',
+      'miskolc_sweepers'
     ]
   );
 });

@@ -11,6 +11,7 @@ import {
   DirectMessageRepository,
   DmReportRepository,
   IN_MEMORY,
+  NON_LEGACY_TABLES,
   SqliteDatabase
 } from '../../../src/infrastructure/database/index.ts';
 
@@ -50,11 +51,15 @@ export function makeTmpDir(prefix = 'sharkvoic-unit-'): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
 
-/** Schema snapshot used to compare two databases. */
-export function schemaSnapshot(db: SqliteDatabase['connection']): unknown {
-  const master = db
+/**
+ * Schema snapshot used to compare two databases. `legacyOnly` leaves out the tables added after
+ * the legacy schema ({@link NON_LEGACY_TABLES}) and their indexes, for comparisons with database.js.
+ */
+export function schemaSnapshot(db: SqliteDatabase['connection'], { legacyOnly = false } = {}): unknown {
+  const master = (db
     .prepare("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY name")
-    .all() as { type: string; name: string }[];
+    .all() as { type: string; name: string; tbl_name: string }[])
+    .filter((m) => !legacyOnly || !NON_LEGACY_TABLES.includes(m.tbl_name));
   const tables = master.filter((m) => m.type === 'table').map((m) => m.name);
   const columns = Object.fromEntries(tables.map((t) => [t, db.prepare('SELECT * FROM pragma_table_info(?)').all(t)]));
   return { master, columns };

@@ -9,24 +9,36 @@ import type { LegacyModuleAdapter } from '../../infrastructure/socket/LegacyModu
 import type { SocketServer } from '../../infrastructure/socket/SocketServer.ts';
 import type { PresenceService } from '../../modules/presence/PresenceService.ts';
 import type { UserRegistry } from '../../modules/presence/UserRegistry.ts';
+import type { SweepersApi } from '../../modules/sweepers/types.ts';
 import type * as L from '../legacy/legacyModules.ts';
 
-/** Socket modules in mount order (= legacy server.js order). Disconnect listeners fire in this order. */
+/**
+ * Socket modules in mount order (= legacy server.js order, then the modules without a legacy
+ * handler). Disconnect listeners fire in this order.
+ */
 export const MODULE_ORDER = Object.freeze([
   'casino', 'watchParty', 'chess', 'codeEditor', 'dm', 'browser', 'call', 'chat', 'whiteboard',
-  'game', 'empire', 'phobia', 'speedTest', 'voice', 'auth', 'admin'
+  'game', 'empire', 'phobia', 'speedTest', 'voice', 'auth', 'admin', 'sweepers'
 ] as const);
 
 export type ModuleName = (typeof MODULE_ORDER)[number];
 
+/** Modules that exist only in TypeScript: mounted when an override provides them, otherwise skipped. */
+export const TS_ONLY_MODULES = Object.freeze(['sweepers'] as const);
+
+export type TsOnlyModuleName = (typeof TS_ONLY_MODULES)[number];
+
+/** Modules backed by a legacy handler. */
+export type LegacyModuleName = Exclude<ModuleName, TsOnlyModuleName>;
+
 /** Order of the voice-join room-state emits (legacy voiceHandler callback in server.js). */
 export const ROOM_STATE_ORDER: readonly ModuleName[] = Object.freeze(
-  ['game', 'whiteboard', 'codeEditor', 'watchParty', 'browser', 'empire', 'phobia'] as const
+  ['game', 'whiteboard', 'codeEditor', 'watchParty', 'browser', 'empire', 'phobia', 'sweepers'] as const
 );
 
 /** Order of the extra `init:data` keys (legacy authHandler getter in server.js). */
 export const INITIAL_STATE_ORDER: readonly ModuleName[] = Object.freeze(
-  ['chat', 'casino', 'watchParty', 'chess', 'browser', 'empire', 'phobia'] as const
+  ['chat', 'casino', 'watchParty', 'chess', 'browser', 'empire', 'phobia', 'sweepers'] as const
 );
 
 /**
@@ -50,6 +62,7 @@ export interface ModuleApis {
   voice: unknown;
   auth: unknown;
   admin: unknown;
+  sweepers: SweepersApi;
 }
 
 /** The shared better-sqlite3 connection (legacy database.js `db`), usable by every repository. */
@@ -88,6 +101,8 @@ export interface ModuleRegistration<TApi> {
   controller?: SocketController;
   initialStateProvider?: InitialStateProvider;
   roomStateProvider?: RoomStateProvider;
+  /** Releases what the module owns (timers, pending saves); called once by `Application.stop`, in reverse mount order. */
+  dispose?: () => void;
   api: TApi;
 }
 

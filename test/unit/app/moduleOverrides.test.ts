@@ -1,7 +1,7 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { TestApp, waitFor } from '../support/TestApp.ts';
-import { MODULE_ORDER } from '../../../src/app/modules/ModuleFactory.ts';
+import { MODULE_ORDER, TS_ONLY_MODULES } from '../../../src/app/modules/ModuleFactory.ts';
 import type { ModuleDeps, ModuleFactory } from '../../../src/app/modules/ModuleFactory.ts';
 import legacyChat from './golden/fixtures/legacyChatOverride.ts';
 
@@ -28,8 +28,9 @@ let t: TestApp;
 before(async () => { t = await TestApp.start({ moduleOverrides: { chat, call, game } }); });
 after(async () => { await t.stop(); });
 
-test('overrides mount at the position of the module they replace', () => {
-  assert.deepEqual(t.app.mountedModules.map((m) => m.name), [...MODULE_ORDER]);
+test('overrides mount at the position of the module they replace; TS-only modules need an override', () => {
+  const tsOnly: readonly string[] = TS_ONLY_MODULES;
+  assert.deepEqual(t.app.mountedModules.map((m) => m.name), MODULE_ORDER.filter((name) => !tsOnly.includes(name)));
   const sources = Object.fromEntries(t.app.mountedModules.map((m) => [m.name, m.source]));
   assert.equal(sources['chat'], 'override');
   assert.equal(sources['call'], 'override');

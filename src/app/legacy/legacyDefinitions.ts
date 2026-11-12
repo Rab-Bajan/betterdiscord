@@ -1,8 +1,8 @@
 import path from 'node:path';
-import type { ModuleDeps, ModuleFactory, ModuleName, ModuleRegistration } from '../modules/ModuleFactory.ts';
+import type { LegacyModuleName, ModuleDeps, ModuleFactory, ModuleRegistration } from '../modules/ModuleFactory.ts';
 import type * as L from './legacyModules.ts';
 
-type LegacyDefinitions = { [N in ModuleName]: ModuleFactory<N> };
+type LegacyDefinitions = { [N in LegacyModuleName]: ModuleFactory<N> };
 
 /** Runs a legacy `io.on('connection')` factory behind an adapter. */
 function legacy<T>(deps: ModuleDeps, build: (io: ModuleDeps['io']) => T): ModuleRegistration<T> {
