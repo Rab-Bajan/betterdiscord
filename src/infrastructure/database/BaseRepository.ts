@@ -10,8 +10,8 @@ export abstract class BaseRepository {
   protected readonly db: Database.Database;
   readonly #statements = new Map<string, Statement>();
 
-  /** @param database an opened (and migrated) database */
-  constructor(database: SqliteDatabase) {
+  /** @param database an opened (and migrated) database, or anything exposing its connection (e.g. the legacy database.js `db`) */
+  constructor(database: Pick<SqliteDatabase, 'connection'>) {
     this.db = database.connection;
   }
 

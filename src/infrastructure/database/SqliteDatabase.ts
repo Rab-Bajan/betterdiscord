@@ -23,18 +23,33 @@ export class SqliteDatabase {
   readonly connection: Database.Database;
 
   /**
-   * Opens (and migrates) the database at `dbPath`.
-   * @param dbPath file path or `:memory:`
-   * @param migrator schema migrator; defaults to the legacy schema
+   * Opens (and migrates) the database at `source`, or wraps an already-open connection.
+   * @param source file path, `:memory:`, or an open connection (see {@link SqliteDatabase.fromConnection})
+   * @param migrator schema migrator; defaults to the legacy schema (ignored for a connection)
    * @param logger receives the legacy "[SQLite] ... kész: <path>" line once migration is done
    */
-  constructor(dbPath: string, migrator: SchemaMigrator = new SchemaMigrator(), logger?: DatabaseLogger) {
+  constructor(source: string | Database.Database, migrator: SchemaMigrator = new SchemaMigrator(), logger?: DatabaseLogger) {
+    if (typeof source !== 'string') {
+      this.path = source.name;
+      this.connection = source;
+      return;
+    }
+    const dbPath = source;
     this.path = dbPath;
     if (dbPath !== IN_MEMORY) SqliteDatabase.#ensureParentDir(dbPath);
     this.connection = new Database(dbPath);
     this.connection.pragma('journal_mode = WAL');
     migrator.migrate(this.connection);
     logger?.info(`[SQLite] Adatbázis inicializálva és kész: ${dbPath}`);
+  }
+
+  /**
+   * Wraps a connection someone else opened and migrated (during the migration: the legacy
+   * database.js `db`), so repositories share it. No pragma, migration or log line is applied;
+   * the owner stays responsible for closing it.
+   */
+  static fromConnection(connection: Database.Database): SqliteDatabase {
+    return new SqliteDatabase(connection);
   }
 
   /** Wraps `fn` in a transaction (better-sqlite3 `db.transaction` passthrough). */

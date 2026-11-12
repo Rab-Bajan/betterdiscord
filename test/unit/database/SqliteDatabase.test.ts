@@ -170,3 +170,22 @@ test('logged path is the path the database was opened with', () => {
 test('logger is optional', () => {
   assert.doesNotThrow(() => new SqliteDatabase(IN_MEMORY).close());
 });
+
+test('fromConnection wraps an open connection without migrating, and repositories share it', () => {
+  const owner = new SqliteDatabase(IN_MEMORY);
+  const before = schemaSnapshot(owner.connection);
+  const wrapped = SqliteDatabase.fromConnection(owner.connection);
+  assert.equal(wrapped.connection, owner.connection);
+  assert.equal(wrapped.path, owner.connection.name);
+  assert.deepEqual(schemaSnapshot(owner.connection), before);
+  owner.connection.prepare("INSERT INTO auth_tokens (token, account_id, created_at) VALUES ('t', 'a', 1)").run();
+  assert.equal((wrapped.connection.prepare('SELECT COUNT(*) AS n FROM auth_tokens').get() as { n: number }).n, 1);
+  owner.close();
+});
+
+test('fromConnection applies no schema to an empty connection', () => {
+  const empty = new SqliteDatabase(IN_MEMORY, new SchemaMigrator([]));
+  const wrapped = SqliteDatabase.fromConnection(empty.connection);
+  assert.deepEqual(names(wrapped, 'table'), []);
+  empty.close();
+});

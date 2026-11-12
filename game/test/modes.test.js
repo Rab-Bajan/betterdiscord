@@ -1,10 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const path = require('path');
-const { pathToFileURL } = require('url');
 const { CHARACTERS, MAPS, NPCS } = require('../content');
 const { Match } = require('../simulation');
 const physics = require('../physics');
+const { importFrontendModule } = require('../../test/support/frontendModule.cjs');
 
 const roster = (n, teamOf = (i) => (i % 2 ? 'grime' : 'soap')) => Array.from({ length: n }, (_, i) => ({ key: `k${i}`, username: `P${i}`, team: teamOf(i), characterId: teamOf(i) === 'soap' ? 'bar_trooper' : 'mold_creeper', side: undefined }));
 const make = (mode, map, n, extra = {}) => new Match({ id: mode, mode, world: MAPS[map], characters: CHARACTERS, roster: roster(n), rng: extra.rng || Math.random, timeLimit: extra.timeLimit || 600, options: extra.options || {}, scoreLimit: extra.scoreLimit || 30 });
@@ -243,7 +242,7 @@ test('jármű: terepen lassabb, falnak ütközve lassul, a kliens másolata pont
   for (let i = 0; i < 90; i += 1) physics.stepVehicle(off, { mx: 0, mz: 1 }, world, 1 / 30);
   assert.ok(off.speed <= physics.VEHICLE.maxSpeed * physics.VEHICLE.offroad + 0.01);
 
-  const client = await import(pathToFileURL(path.resolve(__dirname, '../../../betterdiscord-frontend/src/game/movement.js')).href);
+  const client = await importFrontendModule('movement');
   const [x, z] = world.track.routes[0].points[3];
   const make2 = () => ({ x, y: 0, z, vy: 0, kx: 0, kz: 0, onGround: true, dashTime: 0, dashX: 0, dashZ: 0, speed: 3, heading: 1, nitro: 60, boostTime: 0.5, stunTime: 0.1 });
   const [a, b] = [make2(), make2()];

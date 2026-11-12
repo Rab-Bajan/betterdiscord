@@ -159,3 +159,9 @@ test('saveDmMessage rejects duplicate ids', (t) => {
   directMessages.saveDmMessage(dm('m1', 1));
   assert.throws(() => directMessages.saveDmMessage(dm('m1', 2)), { code: 'SQLITE_CONSTRAINT_PRIMARYKEY' });
 });
+
+test('getDmContext with a NULL createdAt matches nothing (legacy SQL semantics)', (t) => {
+  const { directMessages } = openMemory(t);
+  directMessages.saveDmMessage(dm('m1', 10));
+  assert.deepEqual(directMessages.getDmContext('alice|bob', null), []);
+});

@@ -77,7 +77,7 @@ export class AppConfig {
   readonly adminUsernames: readonly string[];
   /** SQLite database file. */
   readonly dbPath: string;
-  /** Directory holding key.pem / cert.pem. */
+  /** Directory holding key.pem / cert.pem: CERTS_DIR, else `<backend>/../certs` (legacy server.js). */
   readonly certsDir: string;
   /** Explicit Chrome executable (existence is checked by the browser feature), or null. */
   readonly chromePath: string | null;
@@ -116,7 +116,7 @@ export class AppConfig {
       port: parsePort(env['PORT']),
       adminUsernames: parseAdminUsernames(env['ADMIN_USERNAMES']),
       dbPath: env['SHARKVOIC_DB_PATH'] || path.join(BACKEND_ROOT, 'data', 'sharkvoic.db'),
-      certsDir: path.resolve(BACKEND_ROOT, '../certs'),
+      certsDir: env['CERTS_DIR'] ? path.resolve(env['CERTS_DIR']) : path.resolve(BACKEND_ROOT, '../certs'),
       chromePath: optional(env['CHROME_PATH']),
       stunUrls: parseList(env['STUN_URLS']),
       turnUrls: parseList(env['TURN_URLS']),

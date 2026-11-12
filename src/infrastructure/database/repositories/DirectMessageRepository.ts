@@ -84,9 +84,10 @@ export class DirectMessageRepository extends BaseRepository {
 
   /**
    * Report context: up to `before + 1` messages at or before `createdAt` (so the reported
-   * message itself is included) and up to `after` messages after it, oldest first.
+   * message itself is included) and up to `after` messages after it, oldest first. A NULL
+   * `createdAt` matches nothing (SQL comparison with NULL), as in legacy.
    */
-  getDmContext(dmKey: string, createdAt: number, before = 10, after = 10): DirectMessage[] {
+  getDmContext(dmKey: string, createdAt: number | null, before = 10, after = 10): DirectMessage[] {
     const older = (this.statement(OLDER_SQL).all(dmKey, createdAt, before + 1) as DirectMessageRow[]).reverse();
     const newer = this.statement(NEWER_SQL).all(dmKey, createdAt, after) as DirectMessageRow[];
     return [...older, ...newer].map((row) => formatDmRow(row));
