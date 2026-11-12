@@ -1,13 +1,12 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const path = require('path');
-const { pathToFileURL } = require('url');
 const Database = require('better-sqlite3');
 const { CHARACTERS, BATHROOM_ARENA } = require('../content');
 const physics = require('../physics');
 const { Match } = require('../simulation');
 const { createGameStore } = require('../store');
 const { xpForLevel, levelFromXp, xpForMatch, isRewardable, MAX_MATCH_XP } = require('../progression');
+const { importFrontendModule } = require('../../test/support/frontendModule.cjs');
 
 const openWorld = { bounds: { minX: -50, maxX: 50, minZ: -50, maxZ: 50, height: 20 }, colliders: [], spawns: { soap: [[0, 0, 0]], grime: [[0, 0, -10]] } };
 const makeMatch = (opts = {}, a = 'bar_trooper', b = 'mold_creeper') =>
@@ -54,7 +53,7 @@ test('ugrás és gravitáció, fedezékre fel lehet állni', () => {
 });
 
 test('a kliens előrejelzése pontosan egyezik a szerver mozgásával', async () => {
-  const client = await import(pathToFileURL(path.resolve(__dirname, '../../../betterdiscord-frontend/src/game/movement.js')).href);
+  const client = await importFrontendModule('movement');
   const make = () => ({ x: -30, y: 0, z: 2, vy: 0, kx: 3, kz: -2, onGround: true, dashTime: 0.1, dashX: 5, dashZ: 9 });
   const [a, b] = [make(), make()];
   for (let i = 0; i < 600; i += 1) {

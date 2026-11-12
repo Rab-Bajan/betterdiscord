@@ -2,12 +2,13 @@ const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
 
-const dataDir = path.resolve(__dirname, 'data');
+// SHARKVOIC_DB_PATH lets tests (and other environments) use a separate database file
+const dbPath = process.env.SHARKVOIC_DB_PATH || path.join(path.resolve(__dirname, 'data'), 'sharkvoic.db');
+const dataDir = path.dirname(dbPath);
 if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
 }
 
-const dbPath = path.join(dataDir, 'sharkvoic.db');
 const db = new Database(dbPath);
 
 // WAL mód bekapcsolása a gyors és biztonságos párhuzamos írás/olvasásért
