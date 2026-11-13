@@ -32,13 +32,16 @@ export interface SweepersTimings {
   /** A world nobody is connected to is saved and unloaded after this long. */
   emptyRoomUnloadMs: number;
   saveIntervalMs: number;
+  /** `miskolc:clock` is broadcast to each world this often. */
+  clockSyncMs: number;
 }
 
 export const DEFAULT_TIMINGS: Readonly<SweepersTimings> = Object.freeze({
   tickRate: 12,
   reconnectGraceMs: 120_000,
   emptyRoomUnloadMs: 120_000,
-  saveIntervalMs: 60_000
+  saveIntervalMs: 60_000,
+  clockSyncMs: 30_000
 });
 
 export interface SweepersServiceOptions {
@@ -116,7 +119,12 @@ export class SweepersService {
       this.#events.kicked(displacedSocketId, channelId, { reason: 'displaced' });
     }
     this.#socketRooms.set(socketId, channelId);
+    // The weather is advanced first so init_state carries it, but its broadcast waits until after
+    // init_state: the joiner is already in the socket.io room and must never see a world event first.
+    const weatherChanged = room.advanceWeather(now);
     this.#events.initState(socketId, room.initState(player, this.#timings.tickRate, now));
+    this.#events.clockTo(socketId, room.clockSync(now));
+    if (weatherChanged) this.#events.weather(channelId, room.weather(now));
     if (!restored) this.#events.playerJoined(channelId, player.snapshot(), socketId);
     if (room.connectedCount !== wasConnected) this.#sessionChanged(room);
     return { leftChannelId, displacedSocketId };
@@ -150,9 +158,9 @@ export class SweepersService {
   input(socketId: string, input: PlayerInput): void {
     const room = this.#socketRooms.get(socketId) === input.channelId ? this.#rooms.get(input.channelId) : undefined;
     const player = room?.bySocket(socketId);
-    if (!player) throw new SweepersError(SWEEPERS_ERRORS.notInRoom, { channelId: input.channelId });
+    if (!room || !player) throw new SweepersError(SWEEPERS_ERRORS.notInRoom, { channelId: input.channelId });
     const { channelId: _channelId, seq, ...pose } = input;
-    player.applyInput(seq, pose, this.#clock.now());
+    player.applyInput(seq, pose, this.#clock.now(), room.moveWorld);
   }
 
   /** One tick for every loaded world. */
@@ -165,9 +173,33 @@ export class SweepersService {
       }
       const sync = room.takeTick(now);
       if (sync) this.#events.tickSync(room.channelId, sync);
+      this.#advanceWeather(room, now);
+      if (now - room.lastClockSyncAt >= this.#timings.clockSyncMs) {
+        room.lastClockSyncAt = now;
+        this.#events.clock(room.channelId, room.clockSync(now));
+      }
       if (room.emptySince !== null && now - room.emptySince >= this.#timings.emptyRoomUnloadMs) this.#unload(room, now);
       else if (now - room.lastSavedAt >= this.#timings.saveIntervalMs) this.#save(room, now);
     }
+  }
+
+  /**
+   * Adds team revenue (Ft) to a loaded world's lifetime total (producer: the Phase E weighbridge)
+   * and opens the districts whose thresholds it reaches: each emits `miskolc:district_unlocked`, and
+   * the world is saved at once. Returns the newly opened district ids.
+   */
+  addRevenue(channelId: string, amount: number): number[] {
+    const room = this.#rooms.get(channelId);
+    if (!room) throw new SweepersError(SWEEPERS_ERRORS.roomNotLoaded, { channelId });
+    const opened = room.addRevenue(amount);
+    if (opened.length === 0) return opened;
+    const unlockedDistricts = room.unlockedDistricts();
+    for (const district of opened) {
+      this.#log.info(`MiskolcSweepers kerület megnyílt: ${channelId} / ${district}`);
+      this.#events.districtUnlocked(channelId, { district, unlockedDistricts });
+    }
+    this.#save(room, this.#clock.now());
+    return opened;
   }
 
   summaries(): Record<string, SweepersSessionSummary> {
@@ -205,6 +237,10 @@ export class SweepersService {
       if (!this.#disposed) this.#cancelLoop ??= this.#scheduler(Math.round(1000 / this.#timings.tickRate), () => this.#safely('tick', () => this.tick()));
     }
     return room;
+  }
+
+  #advanceWeather(room: SweepersRoom, now: number): void {
+    if (room.advanceWeather(now)) this.#events.weather(room.channelId, room.weather(now));
   }
 
   #unload(room: SweepersRoom, now: number): void {

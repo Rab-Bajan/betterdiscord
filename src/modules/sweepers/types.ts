@@ -1,5 +1,9 @@
-// MiskolcSweepers wire protocol (Phase A). Units: metres, y-up, rotation in radians.
+// MiskolcSweepers wire protocol (Phases A–B). Units: metres, y-up, rotation in radians.
 // Later phases extend these shapes; they never rename a field or an event.
+
+import type { CityLayout } from './city/layoutTypes.ts';
+import type { ClockState } from './dayClock.ts';
+import type { WeatherPayload } from './weather.ts';
 
 /** Animation / activity state of a player; the index of each entry is the protocol value. */
 export const PLAYER_ANIM_STATES = Object.freeze([
@@ -18,7 +22,10 @@ export const SWEEPERS_EVENTS = Object.freeze({
   playerJoined: 'miskolc:player_joined',
   playerLeft: 'miskolc:player_left',
   sessionUpdated: 'miskolc:session-updated',
-  kicked: 'miskolc:kicked'
+  kicked: 'miskolc:kicked',
+  districtUnlocked: 'miskolc:district_unlocked',
+  clock: 'miskolc:clock',
+  weather: 'miskolc:weather'
 } as const);
 
 /** Position, heading and activity of a player. */
@@ -68,6 +75,21 @@ export interface InitStatePayload {
   hexes: HexSnapshot[];
   teamFunds: number;
   personal: PersonalStats;
+  /** The city (identical for every room). */
+  layout: CityLayout;
+  /** Open district ids, ascending, always containing 0. */
+  unlockedDistricts: number[];
+  /** Team lifetime revenue, Ft. */
+  lifetimeEarned: number;
+  clock: ClockState;
+  weather: WeatherPayload;
+}
+
+/** `miskolc:district_unlocked`, to the world when a district opens. */
+export interface DistrictUnlockedPayload {
+  district: number;
+  /** All open districts after this unlock. */
+  unlockedDistricts: number[];
 }
 
 /** `[id, xCm, yCm, zCm, rot16, stateIdx, corr0|1]`, all integers. */

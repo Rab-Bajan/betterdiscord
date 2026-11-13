@@ -12,6 +12,9 @@ import { parsePlayerInput, parseRoomRequest } from './payloads.ts';
 import { SWEEPERS_EVENTS } from './types.ts';
 
 const DEFAULT_AVATAR_COLOR = '#7655F5';
+/** `miskolc:join_room` per socket: 2/s, burst 3. */
+const ROOM_REQUESTS_PER_SECOND = 2;
+const ROOM_REQUEST_BURST = 3;
 
 /** `miskolc:join_room`, `miskolc:leave_room`, `miskolc:player_input` and the disconnect. */
 export class SweepersController extends SocketController {
@@ -19,20 +22,28 @@ export class SweepersController extends SocketController {
   readonly #users: UserRegistry;
   readonly #channels: ReadonlySet<string>;
   readonly #inputLimit: InputRateLimiter;
+  /**
+   * Joins only: every join re-sends the ~115 kB init_state. Leave is never limited (it sends no
+   * init_state, and a refused leave would leave a ghost player); join/leave cycling is bounded here.
+   */
+  readonly #roomLimit: InputRateLimiter;
 
   constructor(
     service: SweepersService, users: UserRegistry, voiceChannels: readonly VoiceChannel[], logger: Logger,
-    inputLimit: InputRateLimiter = new InputRateLimiter()
+    inputLimit: InputRateLimiter = new InputRateLimiter(),
+    roomLimit: InputRateLimiter = new InputRateLimiter(ROOM_REQUESTS_PER_SECOND, ROOM_REQUEST_BURST)
   ) {
     super(logger);
     this.#service = service;
     this.#users = users;
     this.#inputLimit = inputLimit;
+    this.#roomLimit = roomLimit;
     this.#channels = new Set(voiceChannels.map((c) => c.id));
   }
 
   register(socket: Socket): void {
     this.listen(socket, SWEEPERS_EVENTS.joinRoom, (payload) => {
+      if (!this.#roomLimit.take(socket.id)) throw new SweepersError(SWEEPERS_ERRORS.tooManyRequests, undefined, SweepersError.RATE_LIMITED_CODE);
       const { channelId } = parseRoomRequest(payload);
       if (!this.#channels.has(channelId)) throw new SweepersError(SWEEPERS_ERRORS.unknownChannel, { channelId });
       const identity = this.#identity(socket.id);
@@ -60,6 +71,7 @@ export class SweepersController extends SocketController {
 
     socket.on('disconnect', () => {
       this.#inputLimit.forget(socket.id);
+      this.#roomLimit.forget(socket.id);
       this.#service.disconnect(socket.id);
     });
   }

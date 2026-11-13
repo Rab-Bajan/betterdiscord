@@ -5,7 +5,7 @@ import type { PersonalStats } from './types.ts';
 /** A persisted sweepers world (`miskolc_rooms`). */
 export interface RoomRecord {
   roomId: string;
-  /** Room-level state; Phase A stores only the format version. */
+  /** Room-level world state, `state_json` format v2 (see roomState.ts). */
   state: Record<string, unknown>;
   /** Cleanliness (0..100) by hex id. */
   cleanliness: Record<string, number>;

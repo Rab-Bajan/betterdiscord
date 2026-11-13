@@ -1,8 +1,11 @@
 import type { Server } from 'socket.io';
 import { SWEEPERS_EVENTS } from './types.ts';
+import type { ClockSync } from './dayClock.ts';
 import type {
-  InitStatePayload, PlayerSnapshot, SweepersKickedPayload, SweepersSessionSummary, SweepersSessionUpdate, TickSyncPayload
+  DistrictUnlockedPayload, InitStatePayload, PlayerSnapshot, SweepersKickedPayload, SweepersSessionSummary, SweepersSessionUpdate,
+  TickSyncPayload
 } from './types.ts';
+import type { WeatherPayload } from './weather.ts';
 
 /** Socket.io room of the players of one channel's world. */
 export const sweepersRoomOf = (channelId: string): string => `sweepers:${channelId}`;
@@ -17,6 +20,12 @@ export interface SweepersEvents {
   sessionUpdated(channelId: string, state: SweepersSessionSummary | null): void;
   /** To a socket whose player was taken over by another socket; it is also removed from the world room. */
   kicked(socketId: string, channelId: string, payload: SweepersKickedPayload): void;
+  districtUnlocked(channelId: string, payload: DistrictUnlockedPayload): void;
+  /** `miskolc:clock` to the whole world (periodic). */
+  clock(channelId: string, payload: ClockSync): void;
+  /** `miskolc:clock` to one socket (on join). */
+  clockTo(socketId: string, payload: ClockSync): void;
+  weather(channelId: string, payload: WeatherPayload): void;
 }
 
 /** {@link SweepersEvents} over socket.io. */
@@ -46,6 +55,22 @@ export class SweepersBroadcaster implements SweepersEvents {
   kicked(socketId: string, channelId: string, payload: SweepersKickedPayload): void {
     this.#io.to(socketId).emit(SWEEPERS_EVENTS.kicked, payload);
     this.#io.in(socketId).socketsLeave(sweepersRoomOf(channelId));
+  }
+
+  districtUnlocked(channelId: string, payload: DistrictUnlockedPayload): void {
+    this.#io.to(sweepersRoomOf(channelId)).emit(SWEEPERS_EVENTS.districtUnlocked, payload);
+  }
+
+  clock(channelId: string, payload: ClockSync): void {
+    this.#io.to(sweepersRoomOf(channelId)).emit(SWEEPERS_EVENTS.clock, payload);
+  }
+
+  clockTo(socketId: string, payload: ClockSync): void {
+    this.#io.to(socketId).emit(SWEEPERS_EVENTS.clock, payload);
+  }
+
+  weather(channelId: string, payload: WeatherPayload): void {
+    this.#io.to(sweepersRoomOf(channelId)).emit(SWEEPERS_EVENTS.weather, payload);
   }
 
   /** To the voice channel and the world's players (as phobia does), not the whole server. */

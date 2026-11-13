@@ -2,6 +2,7 @@ import type { DatabaseConnection, ModuleFactory } from '../../app/modules/Module
 import type { Logger } from '../../core/logging/Logger.ts';
 import { voiceChannels } from '../../config/channels.ts';
 import { MISKOLC_SWEEPERS_MIGRATION } from '../../infrastructure/database/schema/migrations.ts';
+import { cityLayout } from './city/cityLayout.ts';
 import { SweepersBroadcaster } from './SweepersBroadcaster.ts';
 import { SweepersController } from './SweepersController.ts';
 import { SweepersRepository } from './SweepersRepository.ts';
@@ -30,6 +31,8 @@ export const sweepersModule: ModuleFactory<'sweepers'> = (deps) => {
   const logger = deps.logger.child('Sweepers');
   // Without its tables sweepers mounts no controller or providers; the rest of the server still starts.
   if (!ensureSweepersSchema(deps.database, logger)) return { api: { getSweepersSessions: () => ({}), getSession: () => null } };
+  // Generate the city once at startup (a few hundred ms), not inside the first player's join.
+  cityLayout();
   const service = new SweepersService({
     store: new SweepersRepository(deps.database),
     events: new SweepersBroadcaster(deps.io),

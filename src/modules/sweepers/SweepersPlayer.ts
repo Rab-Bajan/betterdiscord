@@ -1,5 +1,5 @@
 import { fullBudget, validateMove } from './motion.ts';
-import type { MotionBudget } from './motion.ts';
+import type { MotionBudget, MoveWorld } from './motion.ts';
 import type { PersonalStats, PlayerSnapshot, Pose } from './types.ts';
 
 /** Who a player is, taken from the presence registry at join time. */
@@ -71,10 +71,10 @@ export class SweepersPlayer {
   }
 
   /** Applies one client input; stale or duplicate sequence numbers are ignored (false). */
-  applyInput(seq: number, requested: Pose, now: number): boolean {
+  applyInput(seq: number, requested: Pose, now: number, world: MoveWorld): boolean {
     if (seq <= this.lastSeq) return false;
     this.lastSeq = seq;
-    const result = validateMove(this.pose, requested, this.#budget, now);
+    const result = validateMove(this.pose, requested, this.#budget, now, world);
     this.#budget = result.budget;
     const before = this.pose;
     const after = result.pose;

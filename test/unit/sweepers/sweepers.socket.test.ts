@@ -4,7 +4,8 @@ import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Socket as ClientSocket } from 'socket.io-client';
 import { TestApp, waitFor } from '../support/TestApp.ts';
-import type { InitStatePayload, PlayerSnapshot, SweepersSessionUpdate, TickSyncPayload } from '../../../src/modules/sweepers/types.ts';
+import type { ClockSync } from '../../../src/modules/sweepers/dayClock.ts';
+import type { InitStatePayload, PlayerSnapshot, PlayerTickRow, SweepersSessionUpdate, TickSyncPayload } from '../../../src/modules/sweepers/types.ts';
 
 const ROOM = 'hang-chill';
 
@@ -15,11 +16,13 @@ after(async () => { await t.stop(); });
 const ack = (client: ClientSocket, event: string, payload: unknown): Promise<Record<string, unknown>> =>
   client.timeout(2000).emitWithAck(event, payload) as Promise<Record<string, unknown>>;
 
-async function joinWorld(client: ClientSocket): Promise<InitStatePayload> {
+async function joinWorld(client: ClientSocket, channelId = ROOM): Promise<InitStatePayload> {
   const init = waitFor<InitStatePayload>(client, 'miskolc:init_state');
-  assert.deepEqual(await ack(client, 'miskolc:join_room', { channelId: ROOM }), { ok: true });
+  assert.deepEqual(await ack(client, 'miskolc:join_room', { channelId }), { ok: true });
   return init;
 }
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => { setTimeout(resolve, ms); });
 
 test('refusals: not logged in, unknown channel, malformed payloads, input outside the world', async () => {
   const anonymous = await t.connectClient();
@@ -120,4 +123,119 @@ test('an unauthenticated user:join claiming an accountId cannot take over that p
   assert.deepEqual(kicked, []);
   owner.close();
   impostor.close();
+});
+
+test('join_room is rate limited per socket: a burst of 10 joins yields at most 3 init_states (review MEDIUM-1)', async () => {
+  const { client } = await t.joinAsGuest('SwJoinBurst');
+  let inits = 0;
+  client.on('miskolc:init_state', () => { inits++; });
+  const acks = await Promise.all(Array.from({ length: 10 }, () => ack(client, 'miskolc:join_room', { channelId: ROOM })));
+  // One socket, emitted together: exactly the burst (3) is accepted, the rest get the rate-limit ack.
+  assert.equal(acks.filter((a) => a['ok'] === true).length, 3);
+  const limited = { ok: false, error: 'Túl gyorsan próbálkozol, várj egy kicsit.', code: 'SWEEPERS_RATE_LIMITED' };
+  for (const a of acks.filter((r) => r['ok'] !== true)) assert.deepEqual(a, limited);
+  await sleep(200);
+  assert.equal(inits, 3);
+  // The bucket refills at 2/s: after ~600 ms one more join is accepted (and sends init_state).
+  await sleep(400);
+  assert.deepEqual(await ack(client, 'miskolc:join_room', { channelId: ROOM }), { ok: true });
+  await sleep(100);
+  assert.equal(inits, 4);
+  client.close();
+});
+
+test('leave_room is never rate limited: join, leave, join, leave within 1 s leaves no ghost (review MEDIUM-A)', async () => {
+  const channelId = 'hang-gaming-1';
+  const peer = await t.joinAsGuest('SwPeer');
+  const peerVoice = waitFor<SweepersSessionUpdate>(peer.client, 'miskolc:session-updated');
+  peer.client.emit('voice:join', { channelId });
+  await peerVoice;
+  await joinWorld(peer.client, channelId);
+  const cycler = await t.joinAsGuest('SwCycler');
+  const left: unknown[] = [];
+  peer.client.on('miskolc:player_left', (p: unknown) => left.push(p));
+  const started = Date.now();
+  for (let i = 0; i < 2; i++) {
+    const init = await joinWorld(cycler.client, channelId);
+    const gone = waitFor<{ id: number }>(peer.client, 'miskolc:player_left');
+    const alone = waitFor<SweepersSessionUpdate>(peer.client, 'miskolc:session-updated', (u) => u.state?.playerCount === 1);
+    assert.deepEqual(await ack(cycler.client, 'miskolc:leave_room', { channelId }), { ok: true });
+    assert.deepEqual(await gone, { id: init.selfId });
+    await alone;
+  }
+  assert.ok(Date.now() - started < 1000, 'the cycle ran within 1 s');
+  assert.equal(left.length, 2);
+  // The peer leaves too: the world has nobody connected (null session), so it will unload.
+  const empty = waitFor<SweepersSessionUpdate>(peer.client, 'miskolc:session-updated', (u) => u.state === null);
+  assert.deepEqual(await ack(peer.client, 'miskolc:leave_room', { channelId }), { ok: true });
+  assert.deepEqual(await empty, { channelId, state: null });
+  cycler.client.close();
+  peer.client.close();
+});
+
+test('Phase B world: init_state carries the city; walls and the locked Avas district correct the move', async () => {
+  const channelId = 'hang-altalanos';
+  const { client } = await t.joinAsGuest('SwWalker');
+  const clock = waitFor<ClockSync>(client, 'miskolc:clock');
+  const init = await joinWorld(client, channelId);
+  assert.equal(init.layout.version, 1);
+  assert.equal(init.layout.heightfield.heightsCm.length, 61 * 61);
+  assert.ok(init.layout.buildings.some((b) => b.kind === 'weighbridge'));
+  assert.ok(init.layout.colliders.length > 100);
+  assert.deepEqual(init.unlockedDistricts, [0]);
+  assert.equal(init.lifetimeEarned, 0);
+  assert.equal(init.clock.dayMs, 2_160_000);
+  assert.equal(init.weather.kind, 'clear');
+  const sync = await clock;
+  assert.equal(sync.day, init.clock.day);
+
+  const self = init.players.find((p) => p.id === init.selfId);
+  assert.ok(self);
+  const rows: PlayerTickRow[] = [];
+  client.on('miskolc:tick_sync', (tick: TickSyncPayload) => { for (const row of tick.p) if (row[0] === init.selfId) rows.push(row); });
+  let seq = 0;
+  let at = { x: self.x, z: self.z };
+  const send = (x: number, z: number): void => {
+    client.emit('miskolc:player_input', { channelId, seq: ++seq, x, y: 0, z, rotY: 0, state: 'WALK' });
+  };
+  // Legal walking pace: 0.8 m every 100 ms.
+  const walkTo = async (x: number, z: number): Promise<void> => {
+    for (;;) {
+      const dist = Math.hypot(x - at.x, z - at.z);
+      const k = Math.min(1, 0.8 / dist);
+      at = { x: at.x + (x - at.x) * k, z: at.z + (z - at.z) * k };
+      send(at.x, at.z);
+      await sleep(100);
+      if (k === 1) return;
+    }
+  };
+  const correction = (): Promise<PlayerTickRow> => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('no correction')), 2000);
+    const onTick = (tick: TickSyncPayload): void => {
+      const row = tick.p.find((r) => r[0] === init.selfId && r[6] === 1);
+      if (!row) return;
+      clearTimeout(timer);
+      client.off('miskolc:tick_sync', onTick);
+      resolve(row);
+    };
+    client.on('miskolc:tick_sync', onTick);
+  });
+
+  // Through the LED display beside the weighbridge (z 4.15..4.45).
+  await walkTo(15, 2.5);
+  const wallHit = correction();
+  send(15, 6);
+  const wall = await wallHit;
+  assert.ok(wall[3] < 415 - 30, `stopped in front of the display, z = ${wall[3]} cm`);
+  at = { x: wall[1] / 100, z: wall[3] / 100 };
+  await sleep(150);
+  // Out of the east gate to the edge of the centre hex; one step more is Avas, still locked.
+  await walkTo(15, 1);
+  await walkTo(34, 1);
+  const lockedHit = correction();
+  send(35.5, 1);
+  const locked = await lockedHit;
+  assert.deepEqual([locked[1], locked[3]], [3400, 100]);
+  assert.equal(rows.filter((r) => r[6] === 1).length, 2, 'only the two refused moves were corrected');
+  client.close();
 });

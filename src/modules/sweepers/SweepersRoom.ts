@@ -1,4 +1,13 @@
-import { HEX_CELLS, initialCleanliness } from './hexGrid.ts';
+import { cityLayout } from './city/cityLayout.ts';
+import { DayClock } from './dayClock.ts';
+import type { ClockSync } from './dayClock.ts';
+import { ColliderIndex, groundHeight, sweepCircle } from './geometry.ts';
+import { districtAt, HEX_CELLS, initialCleanliness } from './hexGrid.ts';
+import type { MoveWorld } from './motion.ts';
+import { DISTRICT_IDS, unlockedFor } from './progression.ts';
+import { parseRoomState, serialiseRoomState } from './roomState.ts';
+import { WeatherScheduler } from './weather.ts';
+import type { WeatherPayload } from './weather.ts';
 import { encodePose } from './quantize.ts';
 import { SweepersPlayer } from './SweepersPlayer.ts';
 import type { PlayerIdentity } from './SweepersPlayer.ts';
@@ -7,8 +16,6 @@ import type {
   HexSnapshot, InitStatePayload, PersonalStats, PlayerSnapshot, PlayerTickRow, Pose, SweepersSessionSummary, TickSyncPayload
 } from './types.ts';
 
-/** Version stored in `miskolc_rooms.state_json`. */
-export const ROOM_STATE_VERSION = 1;
 /** Golden angle: spreads consecutive spawn points around the centre hex. */
 const SPAWN_ANGLE_STEP = Math.PI * (3 - Math.sqrt(5));
 
@@ -28,6 +35,20 @@ export interface AttachResult {
 
 const clampCleanliness = (value: number): number => Math.min(100, Math.max(0, value));
 
+let colliderIndex: ColliderIndex | null = null;
+
+/** The movement rules of the city with the given open districts (the set is read live). */
+function cityMoveWorld(unlocked: ReadonlySet<number>): MoveWorld {
+  const layout = cityLayout();
+  colliderIndex ??= new ColliderIndex(layout.colliders);
+  const index = colliderIndex;
+  return {
+    ground: (x, z) => groundHeight(layout.heightfield, x, z),
+    isOpen: (x, z) => unlocked.has(districtAt(x, z)),
+    sweep: (fromX, fromZ, toX, toZ) => sweepCircle(index, fromX, fromZ, toX, toZ)
+  };
+}
+
 /** Spawn pose in the centre district for short id `id`. */
 export function spawnPose(id: number): Pose {
   const angle = id * SPAWN_ANGLE_STEP;
@@ -43,6 +64,15 @@ export class SweepersRoom {
   /** Server time since when nobody is connected, null while someone is. */
   emptySince: number | null = null;
   lastSavedAt: number;
+  /** Server time of the last `miskolc:clock` broadcast. */
+  lastClockSyncAt: number;
+  /** Team lifetime revenue, Ft. */
+  lifetimeEarned: number;
+  /** Movement rules for this room's open districts. */
+  readonly moveWorld: MoveWorld;
+  readonly #unlocked: Set<number>;
+  readonly #clock: DayClock;
+  readonly #weather: WeatherScheduler;
   readonly #cleanliness: number[];
   readonly #players = new Map<number, SweepersPlayer>();
   readonly #byKey = new Map<string, SweepersPlayer>();
@@ -55,6 +85,13 @@ export class SweepersRoom {
     this.startedBy = startedBy;
     this.teamFunds = saved?.teamFunds ?? 0;
     this.lastSavedAt = now;
+    this.lastClockSyncAt = now;
+    const world = parseRoomState(saved?.state ?? {}, channelId);
+    this.lifetimeEarned = world.lifetimeEarned;
+    this.#unlocked = new Set(world.unlockedDistricts);
+    this.#clock = new DayClock(world.clock, now);
+    this.#weather = new WeatherScheduler(world.weather);
+    this.moveWorld = cityMoveWorld(this.#unlocked);
     this.#cleanliness = HEX_CELLS.map((cell) => {
       const stored = saved?.cleanliness[String(cell.id)];
       return stored === undefined ? initialCleanliness(cell) : clampCleanliness(stored);
@@ -155,6 +192,36 @@ export class SweepersRoom {
     return { t: now, acks, p, gone };
   }
 
+  /** Open district ids, ascending. */
+  unlockedDistricts(): number[] {
+    return DISTRICT_IDS.filter((d) => this.#unlocked.has(d));
+  }
+
+  /**
+   * Adds team revenue (Ft) to the lifetime total and opens every district whose threshold it now
+   * reaches. Returns the newly opened district ids, ascending.
+   */
+  addRevenue(amount: number): number[] {
+    if (!Number.isFinite(amount) || amount <= 0) throw new RangeError(`Revenue must be a positive finite amount, got ${amount}`);
+    this.lifetimeEarned += amount;
+    const opened = unlockedFor(this.lifetimeEarned).filter((d) => !this.#unlocked.has(d));
+    for (const d of opened) this.#unlocked.add(d);
+    return opened;
+  }
+
+  clockSync(now: number): ClockSync {
+    return this.#clock.sync(now);
+  }
+
+  /** Advances the weather to `now`; true when it changed. */
+  advanceWeather(now: number): boolean {
+    return this.#weather.advance(this.#clock.elapsed(now));
+  }
+
+  weather(now: number): WeatherPayload {
+    return this.#weather.payload(this.#clock.elapsed(now), now);
+  }
+
   hexSnapshots(): HexSnapshot[] {
     return HEX_CELLS.map((cell) => ({
       id: cell.id, q: cell.q, r: cell.r, district: cell.district, cleanliness: this.#cleanliness[cell.id] ?? 0
@@ -174,7 +241,12 @@ export class SweepersRoom {
       players: this.playerSnapshots(),
       hexes: this.hexSnapshots(),
       teamFunds: this.teamFunds,
-      personal: { ...self.personal }
+      personal: { ...self.personal },
+      layout: cityLayout(),
+      unlockedDistricts: this.unlockedDistricts(),
+      lifetimeEarned: this.lifetimeEarned,
+      clock: this.#clock.state(now),
+      weather: this.weather(now)
     };
   }
 
@@ -187,7 +259,13 @@ export class SweepersRoom {
   record(now: number): RoomRecord {
     const cleanliness: Record<string, number> = {};
     for (const cell of HEX_CELLS) cleanliness[String(cell.id)] = this.#cleanliness[cell.id] ?? 0;
-    return { roomId: this.channelId, state: { v: ROOM_STATE_VERSION }, cleanliness, teamFunds: this.teamFunds, lastSaved: now };
+    const state = serialiseRoomState({
+      lifetimeEarned: this.lifetimeEarned,
+      unlockedDistricts: this.unlockedDistricts(),
+      clock: this.#clock.read(now),
+      weather: this.#weather.record()
+    });
+    return { roomId: this.channelId, state, cleanliness, teamFunds: this.teamFunds, lastSaved: now };
   }
 
   statsRecord(player: SweepersPlayer): PlayerStatsRecord {

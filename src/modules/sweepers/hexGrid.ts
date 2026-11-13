@@ -99,6 +99,14 @@ export function hexAt(x: number, z: number): HexCell | null {
   return CELL_BY_AXIAL.get(`${q},${r}`) ?? null;
 }
 
+/**
+ * District of any world point, inside the 37 hexes or in the outskirts beyond them (same sector
+ * rule as the grid: the hex containing the point decides).
+ */
+export function districtAt(x: number, z: number): number {
+  return districtOf(worldToAxial(x, z));
+}
+
 /** Deterministic 32-bit integer hash (lowbias32). */
 function hash32(value: number): number {
   let h = value >>> 0;
