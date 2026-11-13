@@ -5,6 +5,7 @@ import os from 'node:os';
 import { SqliteDatabase } from '../../../src/infrastructure/database/index.ts';
 import { SweepersRepository } from '../../../src/modules/sweepers/SweepersRepository.ts';
 import { HEX_CELLS } from '../../../src/modules/sweepers/hexGrid.ts';
+import type { InitStatePayload } from '../../../src/modules/sweepers/types.ts';
 import { account, guest, makeService } from './support.ts';
 
 const dbPath = process.env['SHARKVOIC_DB_PATH'] ?? '';
@@ -17,10 +18,10 @@ test('rooms, player stats and structures upsert and load', () => {
   assert.equal(repo.loadRoom('r1'), null);
   assert.equal(repo.loadPlayerStats('acc:a', 'r1'), null);
   repo.saveRoom({ roomId: 'r1', state: { v: 1 }, cleanliness: { 0: 35, 1: 12.5 }, teamFunds: 10, lastSaved: 5 },
-    [{ userId: 'acc:a', roomId: 'r1', stats: { cash: 3, toolTier: 1, backpackTier: 0, totalKg: 1.25 } }]);
+    [{ userId: 'acc:a', roomId: 'r1', stats: { cash: 3, toolTier: 1, backpackTier: 0, totalKg: 1.25 }, extra: { v: 2, starter: true } }]);
   repo.saveRoom({ roomId: 'r1', state: { v: 1 }, cleanliness: { 0: 40, 1: 12.5 }, teamFunds: 99, lastSaved: 6 }, []);
   assert.deepEqual(repo.loadRoom('r1'), { roomId: 'r1', state: { v: 1 }, cleanliness: { 0: 40, 1: 12.5 }, teamFunds: 99, lastSaved: 6 });
-  assert.deepEqual(repo.loadPlayerStats('acc:a', 'r1'), { cash: 3, toolTier: 1, backpackTier: 0, totalKg: 1.25 });
+  assert.deepEqual(repo.loadPlayerStats('acc:a', 'r1'), { stats: { cash: 3, toolTier: 1, backpackTier: 0, totalKg: 1.25 }, extra: { v: 2, starter: true } });
   assert.equal(repo.loadPlayerStats('acc:a', 'r2'), null, 'stats are per room');
 
   repo.upsertStructure({ id: 'st1', roomId: 'r1', type: 'conveyor', x: 1, y: 0, z: 2, rotY: 0.5, config: { len: 3 } });
@@ -43,7 +44,7 @@ test('service round trip: a world saved on unload comes back with the next load'
   room.teamFunds = 1234;
   const xena = [...room.players()].find((p) => p.username === 'Xena');
   assert.ok(xena);
-  xena.personal = { cash: 50, toolTier: 3, backpackTier: 2, totalKg: 7.5 };
+  Object.assign(xena.personal, { cash: 50, toolTier: 3, backpackTier: 2, totalKg: 7.5, owned: 0b10001001 });
   first.service.disconnect('s1');
   first.service.disconnect('s2');
   first.clock.ms += 120_000;
@@ -52,10 +53,12 @@ test('service round trip: a world saved on unload comes back with the next load'
 
   const second = makeService({ store: new SweepersRepository(database) });
   second.service.join('hang-chill', 's9', account('acc-x', 'Xena'));
-  const init = second.events.of('initState').at(-1)?.[1] as { teamFunds: number; personal: unknown; hexes: Array<{ cleanliness: number }> };
+  const init = second.events.of('initState').at(-1)?.[1] as InitStatePayload;
   assert.equal(init.teamFunds, 1234);
-  assert.deepEqual(init.personal, { cash: 50, toolTier: 3, backpackTier: 2, totalKg: 7.5 });
+  const { cash, toolTier, backpackTier, totalKg, owned } = init.personal;
+  assert.deepEqual({ cash, toolTier, backpackTier, totalKg, owned }, { cash: 50, toolTier: 3, backpackTier: 2, totalKg: 7.5, owned: 0b10001001 });
   assert.equal(init.hexes.length, HEX_CELLS.length);
-  assert.equal(init.hexes[0]?.cleanliness, 35);
-  assert.deepEqual(new SweepersRepository(database).loadPlayerStats('name:guest', 'hang-chill'), { cash: 0, toolTier: 0, backpackTier: 0, totalKg: 0 });
+  assert.ok(Math.abs((init.hexes[0]?.cleanliness ?? 0) - 35) <= 2);
+  // The guest got the starter grant on its first load; it was persisted at once.
+  assert.equal(new SweepersRepository(database).loadPlayerStats('name:guest', 'hang-chill')?.stats.cash, 2000);
 });

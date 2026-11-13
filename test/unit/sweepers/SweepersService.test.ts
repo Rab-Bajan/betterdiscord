@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { PlayerInput } from '../../../src/modules/sweepers/payloads.ts';
 import { spawnPose } from '../../../src/modules/sweepers/SweepersRoom.ts';
-import { SweepersError } from '../../../src/modules/sweepers/SweepersError.ts';
+import { SWEEPERS_ERRORS, SweepersError } from '../../../src/modules/sweepers/SweepersError.ts';
 import type { InitStatePayload, TickSyncPayload } from '../../../src/modules/sweepers/types.ts';
 import { account, guest, makeService } from './support.ts';
 
@@ -21,10 +21,13 @@ test('join sends init_state (37 hexes, personal stats), announces the player and
   assert.equal(init.selfId, 1);
   assert.equal(init.tickRate, 12);
   assert.equal(init.hexes.length, 37);
-  assert.equal(init.hexes[0]?.cleanliness, 35);
+  // Phase C: cleanliness derives from the generated debris (within ±2 of the stored / initial value).
+  assert.ok(Math.abs((init.hexes[0]?.cleanliness ?? 0) - 35) <= 2);
   assert.equal(init.teamFunds, 0);
-  assert.deepEqual(init.personal, { cash: 0, toolTier: 0, backpackTier: 0, totalKg: 0 });
-  assert.deepEqual(init.players, [{ id: 1, accountId: null, username: 'Alice', avatarColor: '#123456', ...spawnPose(1) }]);
+  // Phase A fields keep their meaning; a new player has the one-time 2 000 Ft starter grant.
+  const { cash, toolTier, backpackTier, totalKg } = init.personal;
+  assert.deepEqual({ cash, toolTier, backpackTier, totalKg }, { cash: 2000, toolTier: 0, backpackTier: 0, totalKg: 0 });
+  assert.deepEqual(init.players, [{ id: 1, accountId: null, username: 'Alice', avatarColor: '#123456', ...spawnPose(1), tool: 0 }]);
   assert.deepEqual(events.of('playerJoined'), [[ROOM, init.players[0], 's1']]);
   assert.deepEqual(events.of('sessionUpdated'), [[ROOM, { active: true, startedBy: 'Alice', playerCount: 1 }]]);
   assert.equal(scheduler.active, 1);
@@ -53,7 +56,7 @@ test('tick_sync carries only changed players, acks of advanced seqs, and nothing
   assert.deepEqual(first.acks, { 1: 1 });
   assert.deepEqual(first.gone, []);
   assert.equal(first.p.length, 1);
-  assert.deepEqual(first.p[0], [1, Math.round((start.x + 0.5) * 100), 0, Math.round(start.z * 100), 32768, 2, 0]);
+  assert.deepEqual(first.p[0], [1, Math.round((start.x + 0.5) * 100), 0, Math.round(start.z * 100), 32768, 2, 0, 0]);
   service.tick();
   assert.equal(events.of('tickSync').length, 1, 'no tick when nothing changed');
   // A stale seq is ignored entirely.
@@ -126,7 +129,7 @@ test('after 120 s of grace the player is removed: player_left, gone, stats saved
   service.tick();
   assert.deepEqual(events.of('playerLeft'), [[ROOM, 1]]);
   assert.deepEqual(ticks(events.of('tickSync')).at(-1)?.gone, [1]);
-  assert.deepEqual(store.loadPlayerStats('name:alice', ROOM), { cash: 0, toolTier: 0, backpackTier: 0, totalKg: 0 });
+  assert.deepEqual(store.loadPlayerStats('name:alice', ROOM)?.stats, { cash: 2000, toolTier: 0, backpackTier: 0, totalKg: 0 });
   events.clear();
   service.join(ROOM, 's3', guest('Alice'));
   assert.equal(lastInit(events.of('initState')).selfId, 3, 'a new short id after the window');
@@ -231,13 +234,17 @@ test('a loaded world restores cleanliness, team funds and personal stats', () =>
   for (let id = 0; id < 37; id++) cleanliness[String(id)] = id;
   cleanliness['36'] = 250;
   store.rooms.set(ROOM, { roomId: ROOM, state: { v: 1 }, cleanliness, teamFunds: 4200, lastSaved: 1 });
-  store.savePlayerStats({ userId: 'acc:acc-a', roomId: ROOM, stats: { cash: 77, toolTier: 2, backpackTier: 1, totalKg: 12.5 } });
+  store.savePlayerStats({
+    userId: 'acc:acc-a', roomId: ROOM, stats: { cash: 77, toolTier: 2, backpackTier: 1, totalKg: 12.5 }, extra: { starter: true, owned: 0b10000101 }
+  });
   service.join(ROOM, 's1', account('acc-a', 'Alice'));
   const init = lastInit(events.of('initState'));
   assert.equal(init.teamFunds, 4200);
-  assert.deepEqual(init.hexes.slice(0, 3).map((h) => h.cleanliness), [0, 1, 2]);
+  // Regenerated from the stored cleanliness: each hex within ±2 of it.
+  init.hexes.slice(0, 36).forEach((h) => assert.ok(Math.abs(h.cleanliness - h.id) <= 2, `hex ${h.id}: ${h.cleanliness}`));
   assert.equal(init.hexes[36]?.cleanliness, 100, 'clamped');
-  assert.deepEqual(init.personal, { cash: 77, toolTier: 2, backpackTier: 1, totalKg: 12.5 });
+  const { cash, toolTier, backpackTier, totalKg } = init.personal;
+  assert.deepEqual({ cash, toolTier, backpackTier, totalKg }, { cash: 77, toolTier: 2, backpackTier: 1, totalKg: 12.5 });
 });
 
 test('dispose saves every world and stops the loop', () => {
@@ -253,7 +260,7 @@ test('a failing store is logged, the game keeps running', () => {
   const { service, events } = makeService({
     store: {
       loadRoom: () => { throw new Error('disk'); },
-      loadPlayerStats: () => { throw new Error('disk'); },
+      loadPlayerStats: () => null,
       saveRoom: () => { throw new Error('disk'); },
       savePlayerStats: () => { throw new Error('disk'); }
     }
@@ -262,4 +269,24 @@ test('a failing store is logged, the game keeps running', () => {
   assert.equal(lastInit(events.of('initState')).hexes.length, 37);
   service.dispose();
   assert.equal(service.leave('s1'), ROOM);
+});
+
+test('a failed stats read refuses the join and never pays the grant or overwrites the stored row', () => {
+  const saved: string[] = [];
+  const { service } = makeService({
+    store: {
+      loadRoom: () => null,
+      loadPlayerStats: () => { throw new Error('disk'); },
+      saveRoom: () => undefined,
+      savePlayerStats: (row) => { saved.push(row.userId); }
+    }
+  });
+  assert.throws(() => service.join(ROOM, 's1', guest('Alice')), (err: unknown) => err instanceof SweepersError && err.message === SWEEPERS_ERRORS.shuttingDown);
+  assert.deepEqual(saved, []);
+  // The refused join leaves the room empty and unloadable, not pinned in memory.
+  const room = service.room(ROOM);
+  assert.ok(room);
+  assert.notEqual(room.emptySince, null);
+  service.dispose();
+  assert.deepEqual(saved, []);
 });

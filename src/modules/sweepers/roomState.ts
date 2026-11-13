@@ -1,5 +1,5 @@
-// `miskolc_rooms.state_json`: the room-level world state (format v2). A v1 row (Phase A stored only
-// `{ "v": 1 }`) or any missing / corrupt field loads as the fresh default.
+// `miskolc_rooms.state_json`: the room-level world state (format v3). A v1 row (Phase A stored only
+// `{ "v": 1 }`) or any missing / corrupt field loads as the fresh default; a v2 row has no debris.
 import { DAY_MS, FRESH_CLOCK } from './dayClock.ts';
 import type { ClockReading } from './dayClock.ts';
 import { isPlainObject } from '../../core/validation/isPlainObject.ts';
@@ -8,7 +8,7 @@ import { freshWeather, SPELL_GAP_DAYS, SPELL_LENGTH_DAYS, WEATHER_KINDS } from '
 import type { WeatherKind, WeatherRecord } from './weather.ts';
 
 /** Version stored in `state_json.v`. */
-export const ROOM_STATE_VERSION = 2;
+export const ROOM_STATE_VERSION = 3;
 
 export interface RoomWorldRecord {
   /** Team lifetime revenue, Ft (only grows). */
@@ -17,6 +17,8 @@ export interface RoomWorldRecord {
   unlockedDistricts: number[];
   clock: ClockReading;
   weather: WeatherRecord;
+  /** v3 `debris` as stored (validated by `DebrisWorld.restore`); null for v1 / v2 rows (regenerate). */
+  debris: unknown;
 }
 
 const isFiniteNumber = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
@@ -45,11 +47,13 @@ function parseWeather(value: unknown, roomId: string): WeatherRecord {
 }
 
 /**
- * The world state of a stored `state_json` (defaults for anything absent or invalid). `state.v` is
- * not read: v1 rows have none of these fields and v2 is the current format. A later version that
- * changes the meaning of a field must branch on `v` here explicitly.
+ * The world state of a stored `state_json` (defaults for anything absent or invalid). Branches on
+ * `v`: v1 (or none) has none of these fields, v2 adds the world fields, v3 adds `debris`. No version
+ * changed the meaning of an earlier field.
  */
 export function parseRoomState(state: Record<string, unknown>, roomId: string): RoomWorldRecord {
+  const version = state['v'];
+  const debris = version === 3 && state['debris'] !== undefined ? state['debris'] : null;
   const lifetimeEarned = isFiniteNumber(state['lifetimeEarned']) && state['lifetimeEarned'] > 0 ? state['lifetimeEarned'] : 0;
   const stored: unknown[] = Array.isArray(state['unlockedDistricts']) ? state['unlockedDistricts'] : [];
   // Unlocks never go back: the stored ones stay open even if a threshold was raised later.
@@ -59,7 +63,8 @@ export function parseRoomState(state: Record<string, unknown>, roomId: string): 
     lifetimeEarned,
     unlockedDistricts: DISTRICT_IDS.filter((d) => unlocked.has(d)),
     clock,
-    weather: boundedWeather(parseWeather(state['weather'], roomId), clock, roomId)
+    weather: boundedWeather(parseWeather(state['weather'], roomId), clock, roomId),
+    debris
   };
 }
 
@@ -79,5 +84,7 @@ function boundedWeather(weather: WeatherRecord, clock: ClockReading, roomId: str
 
 /** The `state_json` object of a world state. */
 export function serialiseRoomState(world: RoomWorldRecord): Record<string, unknown> {
-  return { v: ROOM_STATE_VERSION, ...world, unlockedDistricts: [...world.unlockedDistricts], clock: { ...world.clock }, weather: { ...world.weather } };
+  return {
+    v: ROOM_STATE_VERSION, ...world, unlockedDistricts: [...world.unlockedDistricts], clock: { ...world.clock }, weather: { ...world.weather }
+  };
 }

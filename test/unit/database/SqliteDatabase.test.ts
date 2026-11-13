@@ -112,7 +112,8 @@ test('migrations are listed in legacy order, additions last', () => {
       'dm_reports',
       'auth_tokens',
       'phobia',
-      'miskolc_sweepers'
+      'miskolc_sweepers',
+      'miskolc_player_stats.stats_json'
     ]
   );
 });

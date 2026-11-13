@@ -26,6 +26,6 @@ test('state index follows the protocol order', () => {
 });
 
 test('encodePose: [id, xCm, yCm, zCm, rot16, stateIdx, corr]', () => {
-  assert.deepEqual(encodePose(7, { x: 1.006, y: 0.5, z: -3.333, rotY: Math.PI, state: 'SPRINT' }, true), [7, 101, 50, -333, 32768, 2, 1]);
-  assert.deepEqual(encodePose(1, { x: 0, y: 0, z: 0, rotY: 0, state: 'IDLE' }, false), [1, 0, 0, 0, 0, 0, 0]);
+  assert.deepEqual(encodePose(7, { x: 1.006, y: 0.5, z: -3.333, rotY: Math.PI, state: 'SPRINT' }, true), [7, 101, 50, -333, 32768, 2, 1, 0]);
+  assert.deepEqual(encodePose(1, { x: 0, y: 0, z: 0, rotY: 0, state: 'IDLE' }, false, 5), [1, 0, 0, 0, 0, 0, 0, 5]);
 });

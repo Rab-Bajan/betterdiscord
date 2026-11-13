@@ -4,10 +4,9 @@ import { Logger } from '../../../src/core/logging/Logger.ts';
 import type { SweepersEvents } from '../../../src/modules/sweepers/SweepersBroadcaster.ts';
 import type { MoveWorld } from '../../../src/modules/sweepers/motion.ts';
 import type { PlayerIdentity } from '../../../src/modules/sweepers/SweepersPlayer.ts';
-import type { PlayerStatsRecord, RoomRecord, SweepersStore } from '../../../src/modules/sweepers/SweepersRepository.ts';
+import type { PlayerStatsRecord, RoomRecord, StoredPlayerStats, SweepersStore } from '../../../src/modules/sweepers/SweepersRepository.ts';
 import { SweepersService } from '../../../src/modules/sweepers/SweepersService.ts';
 import type { SweepersServiceOptions } from '../../../src/modules/sweepers/SweepersService.ts';
-import type { PersonalStats } from '../../../src/modules/sweepers/types.ts';
 
 export class ManualClock {
   ms = 1_000_000;
@@ -32,15 +31,16 @@ export class ManualScheduler {
 
 export class MemoryStore implements SweepersStore {
   readonly rooms = new Map<string, RoomRecord>();
-  readonly stats = new Map<string, PersonalStats>();
+  readonly stats = new Map<string, StoredPlayerStats>();
   saves = 0;
 
   loadRoom(roomId: string): RoomRecord | null {
     return this.rooms.get(roomId) ?? null;
   }
 
-  loadPlayerStats(userId: string, roomId: string): PersonalStats | null {
-    return this.stats.get(`${userId}|${roomId}`) ?? null;
+  loadPlayerStats(userId: string, roomId: string): StoredPlayerStats | null {
+    const stored = this.stats.get(`${userId}|${roomId}`);
+    return stored ? structuredClone(stored) : null;
   }
 
   saveRoom(room: RoomRecord, players: readonly PlayerStatsRecord[]): void {
@@ -49,8 +49,8 @@ export class MemoryStore implements SweepersStore {
     for (const p of players) this.savePlayerStats(p);
   }
 
-  savePlayerStats({ userId, roomId, stats }: PlayerStatsRecord): void {
-    this.stats.set(`${userId}|${roomId}`, { ...stats });
+  savePlayerStats({ userId, roomId, stats, extra }: PlayerStatsRecord): void {
+    this.stats.set(`${userId}|${roomId}`, { stats: { ...stats }, extra: structuredClone(extra) });
   }
 }
 
@@ -68,6 +68,8 @@ export class RecordingEvents implements SweepersEvents {
   clock(...args: Parameters<SweepersEvents['clock']>): void { this.log.push(['clock', ...args]); }
   clockTo(...args: Parameters<SweepersEvents['clockTo']>): void { this.log.push(['clockTo', ...args]); }
   weather(...args: Parameters<SweepersEvents['weather']>): void { this.log.push(['weather', ...args]); }
+  debrisUpdate(...args: Parameters<SweepersEvents['debrisUpdate']>): void { this.log.push(['debrisUpdate', ...args]); }
+  personalUpdate(...args: Parameters<SweepersEvents['personalUpdate']>): void { this.log.push(['personalUpdate', ...args]); }
 
   /** Recorded calls of `name`, removing nothing. */
   of(name: string): unknown[][] {

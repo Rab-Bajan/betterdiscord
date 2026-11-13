@@ -5,7 +5,7 @@ import type { PersonalStats } from './types.ts';
 /** A persisted sweepers world (`miskolc_rooms`). */
 export interface RoomRecord {
   roomId: string;
-  /** Room-level world state, `state_json` format v2 (see roomState.ts). */
+  /** Room-level world state, `state_json` format v3 (see roomState.ts). */
   state: Record<string, unknown>;
   /** Cleanliness (0..100) by hex id. */
   cleanliness: Record<string, number>;
@@ -17,7 +17,16 @@ export interface RoomRecord {
 export interface PlayerStatsRecord {
   userId: string;
   roomId: string;
+  /** The four v1 columns. */
   stats: PersonalStats;
+  /** `stats_json` (Phase C personal state, see debris/personal.ts). */
+  extra: Record<string, unknown>;
+}
+
+/** A loaded stats row: the v1 columns plus `stats_json` (null for a v1 row). */
+export interface StoredPlayerStats {
+  stats: PersonalStats;
+  extra: Record<string, unknown> | null;
 }
 
 /** A placed structure (`miskolc_world_structures`, used from Phase D on). */
@@ -35,7 +44,7 @@ export interface WorldStructureRecord {
 /** What the sweepers service needs from storage. */
 export interface SweepersStore {
   loadRoom(roomId: string): RoomRecord | null;
-  loadPlayerStats(userId: string, roomId: string): PersonalStats | null;
+  loadPlayerStats(userId: string, roomId: string): StoredPlayerStats | null;
   /** Upserts the room and the given players' stats in one transaction. */
   saveRoom(room: RoomRecord, players: readonly PlayerStatsRecord[]): void;
   savePlayerStats(record: PlayerStatsRecord): void;
@@ -54,6 +63,7 @@ interface PlayerStatsRow {
   equipped_tool_tier: number | null;
   backpack_tier: number | null;
   total_kg_swept: number | null;
+  stats_json: string | null;
 }
 
 interface StructureRow {
@@ -79,13 +89,14 @@ const UPSERT_ROOM_SQL = `
 `;
 const LOAD_STATS_SQL = 'SELECT * FROM miskolc_player_stats WHERE user_id = ? AND room_id = ?';
 const UPSERT_STATS_SQL = `
-  INSERT INTO miskolc_player_stats (user_id, room_id, personal_cash, equipped_tool_tier, backpack_tier, total_kg_swept)
-  VALUES (?, ?, ?, ?, ?, ?)
+  INSERT INTO miskolc_player_stats (user_id, room_id, personal_cash, equipped_tool_tier, backpack_tier, total_kg_swept, stats_json)
+  VALUES (?, ?, ?, ?, ?, ?, ?)
   ON CONFLICT(user_id, room_id) DO UPDATE SET
     personal_cash = excluded.personal_cash,
     equipped_tool_tier = excluded.equipped_tool_tier,
     backpack_tier = excluded.backpack_tier,
-    total_kg_swept = excluded.total_kg_swept
+    total_kg_swept = excluded.total_kg_swept,
+    stats_json = excluded.stats_json
 `;
 const LOAD_STRUCTURES_SQL = 'SELECT * FROM miskolc_world_structures WHERE room_id = ? ORDER BY rowid';
 const UPSERT_STRUCTURE_SQL = `
@@ -109,7 +120,7 @@ function jsonObject(text: string | null): Record<string, unknown> {
 
 const num = (value: number | null, fallback = 0): number => (typeof value === 'number' && Number.isFinite(value) ? value : fallback);
 
-/** The three `miskolc_*` tables (schema: the `miskolc_sweepers` migration). */
+/** The three `miskolc_*` tables (schema: the `miskolc_sweepers` and `miskolc_player_stats.stats_json` migrations). */
 export class SweepersRepository extends BaseRepository implements SweepersStore {
   loadRoom(roomId: string): RoomRecord | null {
     const row = this.statement(LOAD_ROOM_SQL).get(roomId) as RoomRow | undefined;
@@ -127,14 +138,17 @@ export class SweepersRepository extends BaseRepository implements SweepersStore 
     };
   }
 
-  loadPlayerStats(userId: string, roomId: string): PersonalStats | null {
+  loadPlayerStats(userId: string, roomId: string): StoredPlayerStats | null {
     const row = this.statement(LOAD_STATS_SQL).get(userId, roomId) as PlayerStatsRow | undefined;
     if (!row) return null;
     return {
-      cash: num(row.personal_cash),
-      toolTier: num(row.equipped_tool_tier),
-      backpackTier: num(row.backpack_tier),
-      totalKg: num(row.total_kg_swept)
+      stats: {
+        cash: num(row.personal_cash),
+        toolTier: num(row.equipped_tool_tier),
+        backpackTier: num(row.backpack_tier),
+        totalKg: num(row.total_kg_swept)
+      },
+      extra: row.stats_json === null ? null : jsonObject(row.stats_json)
     };
   }
 
@@ -147,8 +161,10 @@ export class SweepersRepository extends BaseRepository implements SweepersStore 
     })();
   }
 
-  savePlayerStats({ userId, roomId, stats }: PlayerStatsRecord): void {
-    this.statement(UPSERT_STATS_SQL).run(userId, roomId, Math.round(stats.cash), stats.toolTier, stats.backpackTier, stats.totalKg);
+  savePlayerStats({ userId, roomId, stats, extra }: PlayerStatsRecord): void {
+    this.statement(UPSERT_STATS_SQL).run(
+      userId, roomId, Math.round(stats.cash), stats.toolTier, stats.backpackTier, stats.totalKg, JSON.stringify(extra)
+    );
   }
 
   loadStructures(roomId: string): WorldStructureRecord[] {

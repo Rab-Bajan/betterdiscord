@@ -210,13 +210,13 @@ test('a Phase A room row (state_json { v: 1 }) still loads: defaults for the wor
   service.join(ROOM, 's1', guest('Alice'));
   const init = lastInit(events.of('initState'));
   assert.equal(init.teamFunds, 1234);
-  assert.equal(init.hexes[0]?.cleanliness, 77);
+  assert.ok(Math.abs((init.hexes[0]?.cleanliness ?? 0) - 77) <= 2, 'regenerated from the stored cleanliness');
   assert.deepEqual(init.unlockedDistricts, [0]);
   assert.equal(init.lifetimeEarned, 0);
   assert.deepEqual([init.clock.day, init.clock.timeMs], [1, 0]);
   assert.deepEqual(init.weather, { kind: 'clear', untilServerTime: null });
   service.dispose();
   const state = store.rooms.get(ROOM)?.state;
-  assert.equal(state?.['v'], 2);
+  assert.equal(state?.['v'], 3);
   assert.deepEqual(state?.['weather'], freshWeather(ROOM));
 });

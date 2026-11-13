@@ -1,9 +1,10 @@
 import type { Server } from 'socket.io';
 import { SWEEPERS_EVENTS } from './types.ts';
 import type { ClockSync } from './dayClock.ts';
+import type { PersonalStatePayload } from './debris/personal.ts';
 import type {
-  DistrictUnlockedPayload, InitStatePayload, PlayerSnapshot, SweepersKickedPayload, SweepersSessionSummary, SweepersSessionUpdate,
-  TickSyncPayload
+  DebrisChunkUpdate, DistrictUnlockedPayload, InitStatePayload, PlayerSnapshot, SweepersKickedPayload, SweepersSessionSummary,
+  SweepersSessionUpdate, TickSyncPayload
 } from './types.ts';
 import type { WeatherPayload } from './weather.ts';
 
@@ -26,6 +27,10 @@ export interface SweepersEvents {
   /** `miskolc:clock` to one socket (on join). */
   clockTo(socketId: string, payload: ClockSync): void;
   weather(channelId: string, payload: WeatherPayload): void;
+  /** `miskolc:debris_chunk_update` to one socket (its interest loads plus the room-wide deltas). */
+  debrisUpdate(socketId: string, payload: DebrisChunkUpdate): void;
+  /** `miskolc:personal_update` to the owning socket. */
+  personalUpdate(socketId: string, payload: PersonalStatePayload): void;
 }
 
 /** {@link SweepersEvents} over socket.io. */
@@ -71,6 +76,14 @@ export class SweepersBroadcaster implements SweepersEvents {
 
   weather(channelId: string, payload: WeatherPayload): void {
     this.#io.to(sweepersRoomOf(channelId)).emit(SWEEPERS_EVENTS.weather, payload);
+  }
+
+  debrisUpdate(socketId: string, payload: DebrisChunkUpdate): void {
+    this.#io.to(socketId).emit(SWEEPERS_EVENTS.debrisChunkUpdate, payload);
+  }
+
+  personalUpdate(socketId: string, payload: PersonalStatePayload): void {
+    this.#io.to(socketId).emit(SWEEPERS_EVENTS.personalUpdate, payload);
   }
 
   /** To the voice channel and the world's players (as phobia does), not the whole server. */

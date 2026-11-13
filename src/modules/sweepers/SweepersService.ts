@@ -4,8 +4,12 @@ import { SWEEPERS_ERRORS, SweepersError } from './SweepersError.ts';
 import type { PlayerIdentity, SweepersPlayer } from './SweepersPlayer.ts';
 import type { SweepersStore } from './SweepersRepository.ts';
 import { NEW_PLAYER_STATS, SweepersRoom } from './SweepersRoom.ts';
-import type { PlayerInput } from './payloads.ts';
-import type { PersonalStats, SweepersSessionSummary } from './types.ts';
+import type { SweepAck } from './SweepersRoom.ts';
+import { parsePersonal } from './debris/personal.ts';
+import type { PersonalData } from './debris/personal.ts';
+import type { BuyRequest } from './debris/shop.ts';
+import type { PlayerAction, PlayerInput, SweepHit } from './payloads.ts';
+import type { SweepersSessionSummary } from './types.ts';
 
 /** Server time source (ms). */
 export interface Clock {
@@ -109,7 +113,14 @@ export class SweepersService {
     const leftChannelId = previous !== undefined && previous !== channelId && this.leave(socketId) ? previous : null;
     const room = this.#room(channelId, identity.username, now);
     const wasConnected = room.connectedCount;
-    const { player, restored, displacedSocketId, replaced } = room.attach(identity, socketId, now, (key) => this.#loadStats(key, channelId));
+    let granted = false;
+    const { player, restored, displacedSocketId, replaced } = room.attach(identity, socketId, now, (key) => {
+      const loaded = this.#loadStats(key, channelId, now);
+      granted = loaded.granted;
+      return loaded.data;
+    });
+    // The starter grant is persisted at once, so it is paid exactly once per stats row.
+    if (granted) this.#saveStats(room, player);
     if (replaced) {
       this.#saveStats(room, replaced);
       this.#events.playerLeft(channelId, replaced.id);
@@ -125,6 +136,7 @@ export class SweepersService {
     this.#events.initState(socketId, room.initState(player, this.#timings.tickRate, now));
     this.#events.clockTo(socketId, room.clockSync(now));
     if (weatherChanged) this.#events.weather(channelId, room.weather(now));
+    this.#events.debrisUpdate(socketId, room.joinBurst(player, now));
     if (!restored) this.#events.playerJoined(channelId, player.snapshot(), socketId);
     if (room.connectedCount !== wasConnected) this.#sessionChanged(room);
     return { leftChannelId, displacedSocketId };
@@ -156,11 +168,40 @@ export class SweepersService {
 
   /** Applies a client-predicted pose; the result goes out with the next tick. */
   input(socketId: string, input: PlayerInput): void {
-    const room = this.#socketRooms.get(socketId) === input.channelId ? this.#rooms.get(input.channelId) : undefined;
-    const player = room?.bySocket(socketId);
-    if (!room || !player) throw new SweepersError(SWEEPERS_ERRORS.notInRoom, { channelId: input.channelId });
+    const { room, player } = this.#playerOf(socketId, input.channelId);
     const { channelId: _channelId, seq, ...pose } = input;
-    player.applyInput(seq, pose, this.#clock.now(), room.moveWorld);
+    const now = this.#clock.now();
+    if (player.applyInput(seq, pose, now, room.moveWorld, room.speedFactor(player, now))) room.afterInput(player, now);
+  }
+
+  /** One tool use (`miskolc:sweep_hit`); the world changes go out with the next tick. */
+  sweepHit(socketId: string, hit: SweepHit): SweepAck {
+    const { room, player } = this.#playerOf(socketId, hit.channelId);
+    return room.sweepHit(player, hit, this.#clock.now());
+  }
+
+  /** `miskolc:player_action`: select a tool, kick a can, dump the pack. */
+  playerAction(socketId: string, action: PlayerAction): void {
+    const { room, player } = this.#playerOf(socketId, action.channelId);
+    room.action(player, action, this.#clock.now());
+  }
+
+  /** `miskolc:buy_upgrade`; returns the cash left (the personal update follows with the next tick). */
+  buyUpgrade(socketId: string, request: BuyRequest): number {
+    const { room, player } = this.#playerOf(socketId, request.channelId);
+    return room.buyUpgrade(player, request, this.#clock.now());
+  }
+
+  /** Throws `notInRoom` unless the socket plays in the channel's world. */
+  assertInRoom(socketId: string, channelId: string): void {
+    this.#playerOf(socketId, channelId);
+  }
+
+  #playerOf(socketId: string, channelId: string): { room: SweepersRoom; player: SweepersPlayer } {
+    const room = this.#socketRooms.get(socketId) === channelId ? this.#rooms.get(channelId) : undefined;
+    const player = room?.bySocket(socketId);
+    if (!room || !player) throw new SweepersError(SWEEPERS_ERRORS.notInRoom, { channelId });
+    return { room, player };
   }
 
   /** One tick for every loaded world. */
@@ -173,6 +214,10 @@ export class SweepersService {
       }
       const sync = room.takeTick(now);
       if (sync) this.#events.tickSync(room.channelId, sync);
+      for (const out of room.tickDebris(now)) {
+        if (out.debris) this.#events.debrisUpdate(out.socketId, out.debris);
+        if (out.personal) this.#events.personalUpdate(out.socketId, out.personal);
+      }
       this.#advanceWeather(room, now);
       if (now - room.lastClockSyncAt >= this.#timings.clockSyncMs) {
         room.lastClockSyncAt = now;
@@ -251,17 +296,20 @@ export class SweepersService {
   }
 
   #save(room: SweepersRoom, now: number): void {
-    const players = [...room.players()].map((p) => room.statsRecord(p));
+    const players = [...room.players()].map((p) => room.statsRecord(p, now));
     this.#safely('save room', () => this.#store.saveRoom(room.record(now), players));
     room.lastSavedAt = now;
   }
 
   #saveStats(room: SweepersRoom, player: SweepersPlayer): void {
-    this.#safely('save player', () => this.#store.savePlayerStats(room.statsRecord(player)));
+    this.#safely('save player', () => this.#store.savePlayerStats(room.statsRecord(player, this.#clock.now())));
   }
 
-  #loadStats(userId: string, channelId: string): PersonalStats {
-    return this.#safely('load player', () => this.#store.loadPlayerStats(userId, channelId)) ?? NEW_PLAYER_STATS;
+  /** The stored personal state (with the starter grant applied when due), or a fresh one; a failed read refuses the join so the real row is never overwritten. */
+  #loadStats(userId: string, channelId: string, now: number): { data: PersonalData; granted: boolean } {
+    const stored = this.#safely('load player', () => this.#store.loadPlayerStats(userId, channelId));
+    if (stored === undefined) throw new SweepersError(SWEEPERS_ERRORS.shuttingDown);
+    return parsePersonal(stored?.stats ?? NEW_PLAYER_STATS, stored?.extra ?? null, now);
   }
 
   #sessionChanged(room: SweepersRoom): void {

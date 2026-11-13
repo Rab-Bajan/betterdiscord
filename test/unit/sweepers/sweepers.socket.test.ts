@@ -71,7 +71,7 @@ test('join → init_state → input → tick_sync at the other client → discon
   const acked = waitFor<TickSyncPayload>(alice.client, 'miskolc:tick_sync', (s) => s.acks[String(self.id)] === 3);
   alice.client.emit('miskolc:player_input', { channelId: ROOM, seq: 3, x: target.x, y: 0, z: target.z, rotY: Math.PI, state: 'WALK' });
   const row = (await seen).p.find(([id]) => id === self.id);
-  assert.deepEqual(row, [self.id, Math.round(target.x * 100), 0, Math.round(target.z * 100), 32768, 1, 0]);
+  assert.deepEqual(row, [self.id, Math.round(target.x * 100), 0, Math.round(target.z * 100), 32768, 1, 0, 0]);
   await acked;
 
   // Alice drops; within the grace window she comes back on a new socket under the same name.

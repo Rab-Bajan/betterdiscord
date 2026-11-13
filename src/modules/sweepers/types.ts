@@ -1,8 +1,10 @@
-// MiskolcSweepers wire protocol (Phases A–B). Units: metres, y-up, rotation in radians.
+// MiskolcSweepers wire protocol (Phases A–C). Units: metres, y-up, rotation in radians.
 // Later phases extend these shapes; they never rename a field or an event.
 
 import type { CityLayout } from './city/layoutTypes.ts';
 import type { ClockState } from './dayClock.ts';
+import type { ItemRow, KickRow } from './debris/DebrisWorld.ts';
+import type { PersonalStatePayload } from './debris/personal.ts';
 import type { WeatherPayload } from './weather.ts';
 
 /** Animation / activity state of a player; the index of each entry is the protocol value. */
@@ -25,7 +27,12 @@ export const SWEEPERS_EVENTS = Object.freeze({
   kicked: 'miskolc:kicked',
   districtUnlocked: 'miskolc:district_unlocked',
   clock: 'miskolc:clock',
-  weather: 'miskolc:weather'
+  weather: 'miskolc:weather',
+  sweepHit: 'miskolc:sweep_hit',
+  playerAction: 'miskolc:player_action',
+  buyUpgrade: 'miskolc:buy_upgrade',
+  debrisChunkUpdate: 'miskolc:debris_chunk_update',
+  personalUpdate: 'miskolc:personal_update'
 } as const);
 
 /** Position, heading and activity of a player. */
@@ -44,6 +51,8 @@ export interface PlayerSnapshot extends Pose {
   accountId: string | null;
   username: string;
   avatarColor: string;
+  /** Equipped tool 0..7 (Phase C). */
+  tool: number;
 }
 
 /** One hex of the 37-hex district grid. */
@@ -74,7 +83,8 @@ export interface InitStatePayload {
   players: PlayerSnapshot[];
   hexes: HexSnapshot[];
   teamFunds: number;
-  personal: PersonalStats;
+  /** Phase A fields (cash, toolTier, backpackTier, totalKg) plus the Phase C personal state. */
+  personal: PersonalStatePayload;
   /** The city (identical for every room). */
   layout: CityLayout;
   /** Open district ids, ascending, always containing 0. */
@@ -83,6 +93,41 @@ export interface InitStatePayload {
   lifetimeEarned: number;
   clock: ClockState;
   weather: WeatherPayload;
+  /** Debris grid geometry (Phase C). */
+  debris: DebrisInfo;
+}
+
+/** `init_state.debris`: the chunk grid the client mirrors. */
+export interface DebrisInfo {
+  gen: number;
+  origin: number;
+  chunkM: number;
+  cellM: number;
+  /** Chunks per axis. */
+  n: number;
+  /** Load radius, m. */
+  loadM: number;
+}
+
+/** One full chunk: id, base64 of the 256 cell bytes (dust << 4 | seed), item rows. */
+export interface ChunkLoad {
+  id: number;
+  c: string;
+  i: ItemRow[];
+}
+
+/** `miskolc:debris_chunk_update` (per socket): interest loads / drops plus the room-wide deltas. */
+export interface DebrisChunkUpdate {
+  t: number;
+  load?: ChunkLoad[];
+  drop?: number[];
+  /** Flat triplets [chunkId, cellIdx, byte]. */
+  cells?: number[];
+  add?: ItemRow[];
+  del?: number[];
+  kicks?: KickRow[];
+  /** [hexId, c10]. */
+  hx?: Array<[number, number]>;
 }
 
 /** `miskolc:district_unlocked`, to the world when a district opens. */
@@ -92,8 +137,8 @@ export interface DistrictUnlockedPayload {
   unlockedDistricts: number[];
 }
 
-/** `[id, xCm, yCm, zCm, rot16, stateIdx, corr0|1]`, all integers. */
-export type PlayerTickRow = [number, number, number, number, number, number, 0 | 1];
+/** `[id, xCm, yCm, zCm, rot16, stateIdx, corr0|1, tool]`, all integers (`tool` since Phase C). */
+export type PlayerTickRow = [number, number, number, number, number, number, 0 | 1, number];
 
 /** `miskolc:tick_sync`, broadcast to the room only when something changed. */
 export interface TickSyncPayload {

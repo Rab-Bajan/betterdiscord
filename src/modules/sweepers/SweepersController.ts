@@ -8,15 +8,29 @@ import { sweepersRoomOf } from './SweepersBroadcaster.ts';
 import { SWEEPERS_ERRORS, SweepersError } from './SweepersError.ts';
 import type { PlayerIdentity } from './SweepersPlayer.ts';
 import type { SweepersService } from './SweepersService.ts';
-import { parsePlayerInput, parseRoomRequest } from './payloads.ts';
+import { parseBuyUpgrade, parsePlayerAction, parsePlayerInput, parseRoomRequest, parseSweepHit } from './payloads.ts';
 import { SWEEPERS_EVENTS } from './types.ts';
 
 const DEFAULT_AVATAR_COLOR = '#7655F5';
 /** `miskolc:join_room` per socket: 2/s, burst 3. */
 const ROOM_REQUESTS_PER_SECOND = 2;
 const ROOM_REQUEST_BURST = 3;
+/** `miskolc:sweep_hit`: 8/s, burst 8. `miskolc:player_action`: 5/s, burst 5. `miskolc:buy_upgrade`: 2/s, burst 3. */
+const SWEEP_RATE = 8;
+const ACTION_RATE = 5;
+const BUY_RATE = 2;
+const BUY_BURST = 3;
 
-/** `miskolc:join_room`, `miskolc:leave_room`, `miskolc:player_input` and the disconnect. */
+const rateLimited = (): SweepersError => new SweepersError(SWEEPERS_ERRORS.tooManyRequests, undefined, SweepersError.RATE_LIMITED_CODE);
+
+/** Phase C rate limiters (injectable for tests). */
+export interface SweepersLimits {
+  sweep: InputRateLimiter;
+  action: InputRateLimiter;
+  buy: InputRateLimiter;
+}
+
+/** `miskolc:join_room`, `leave_room`, `player_input`, `sweep_hit`, `player_action`, `buy_upgrade` and the disconnect. */
 export class SweepersController extends SocketController {
   readonly #service: SweepersService;
   readonly #users: UserRegistry;
@@ -27,23 +41,30 @@ export class SweepersController extends SocketController {
    * init_state, and a refused leave would leave a ghost player); join/leave cycling is bounded here.
    */
   readonly #roomLimit: InputRateLimiter;
+  readonly #sweepLimit: InputRateLimiter;
+  readonly #actionLimit: InputRateLimiter;
+  readonly #buyLimit: InputRateLimiter;
 
   constructor(
     service: SweepersService, users: UserRegistry, voiceChannels: readonly VoiceChannel[], logger: Logger,
     inputLimit: InputRateLimiter = new InputRateLimiter(),
-    roomLimit: InputRateLimiter = new InputRateLimiter(ROOM_REQUESTS_PER_SECOND, ROOM_REQUEST_BURST)
+    roomLimit: InputRateLimiter = new InputRateLimiter(ROOM_REQUESTS_PER_SECOND, ROOM_REQUEST_BURST),
+    limits: Partial<SweepersLimits> = {}
   ) {
     super(logger);
     this.#service = service;
     this.#users = users;
     this.#inputLimit = inputLimit;
     this.#roomLimit = roomLimit;
+    this.#sweepLimit = limits.sweep ?? new InputRateLimiter(SWEEP_RATE, SWEEP_RATE);
+    this.#actionLimit = limits.action ?? new InputRateLimiter(ACTION_RATE, ACTION_RATE);
+    this.#buyLimit = limits.buy ?? new InputRateLimiter(BUY_RATE, BUY_BURST);
     this.#channels = new Set(voiceChannels.map((c) => c.id));
   }
 
   register(socket: Socket): void {
     this.listen(socket, SWEEPERS_EVENTS.joinRoom, (payload) => {
-      if (!this.#roomLimit.take(socket.id)) throw new SweepersError(SWEEPERS_ERRORS.tooManyRequests, undefined, SweepersError.RATE_LIMITED_CODE);
+      if (!this.#roomLimit.take(socket.id)) throw rateLimited();
       const { channelId } = parseRoomRequest(payload);
       if (!this.#channels.has(channelId)) throw new SweepersError(SWEEPERS_ERRORS.unknownChannel, { channelId });
       const identity = this.#identity(socket.id);
@@ -69,9 +90,31 @@ export class SweepersController extends SocketController {
       return { ok: true };
     });
 
+    this.listen(socket, SWEEPERS_EVENTS.sweepHit, (payload) => {
+      const hit = parseSweepHit(payload);
+      // The room is checked first (C.4 order: room, bucket, ...).
+      this.#service.assertInRoom(socket.id, hit.channelId);
+      if (!this.#sweepLimit.take(socket.id)) throw rateLimited();
+      return this.#service.sweepHit(socket.id, hit);
+    });
+
+    this.listen(socket, SWEEPERS_EVENTS.playerAction, (payload) => {
+      if (!this.#actionLimit.take(socket.id)) throw rateLimited();
+      this.#service.playerAction(socket.id, parsePlayerAction(payload));
+      return { ok: true };
+    });
+
+    this.listen(socket, SWEEPERS_EVENTS.buyUpgrade, (payload) => {
+      if (!this.#buyLimit.take(socket.id)) throw rateLimited();
+      return { ok: true, cash: this.#service.buyUpgrade(socket.id, parseBuyUpgrade(payload)) };
+    });
+
     socket.on('disconnect', () => {
       this.#inputLimit.forget(socket.id);
       this.#roomLimit.forget(socket.id);
+      this.#sweepLimit.forget(socket.id);
+      this.#actionLimit.forget(socket.id);
+      this.#buyLimit.forget(socket.id);
       this.#service.disconnect(socket.id);
     });
   }

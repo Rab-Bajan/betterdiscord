@@ -188,6 +188,14 @@ const MISKOLC_SWEEPERS_SQL = `
 /** The MiskolcSweepers tables; the sweepers module also applies this step to the shared legacy connection. */
 export const MISKOLC_SWEEPERS_MIGRATION: Migration = execStep('miskolc_sweepers', MISKOLC_SWEEPERS_SQL);
 
+/** MiskolcSweepers Phase C: the personal state beyond the four v1 columns (see sweepers debris/personal.ts). */
+export const MISKOLC_STATS_JSON_MIGRATION: Migration = addColumnStep(
+  'miskolc_player_stats.stats_json',
+  'miskolc_player_stats',
+  'stats_json',
+  'ALTER TABLE miskolc_player_stats ADD COLUMN stats_json TEXT'
+);
+
 /** Tables (and their indexes) that exist only in the new schema, never in legacy database.js. */
 export const NON_LEGACY_TABLES: readonly string[] = Object.freeze(['miskolc_rooms', 'miskolc_player_stats', 'miskolc_world_structures']);
 
@@ -212,5 +220,6 @@ export const MIGRATIONS: readonly Migration[] = [
   execStep('dm_reports', DM_REPORTS_SQL),
   execStep('auth_tokens', AUTH_TOKENS_SQL),
   execStep('phobia', PHOBIA_SQL),
-  MISKOLC_SWEEPERS_MIGRATION
+  MISKOLC_SWEEPERS_MIGRATION,
+  MISKOLC_STATS_JSON_MIGRATION
 ];

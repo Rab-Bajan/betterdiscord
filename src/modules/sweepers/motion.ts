@@ -89,11 +89,12 @@ export interface MoveResult {
  * closed (locked) district; otherwise it is clamped to the world bounds and swept against the colliders
  * (the player slides along a wall instead of passing it). The height must stay in the band
  * [ground − 0.05, ground + 1.2] and change by at most MAX_VERTICAL_SPEED × elapsed plus the banked
- * VERTICAL_BANK. Any adjustment marks the result `corrected`.
+ * VERTICAL_BANK. Any adjustment marks the result `corrected`. `speedFactor` scales the horizontal
+ * budget (1.15 while Kofola is active, Phase C).
  */
-export function validateMove(current: Pose, requested: Pose, budget: MotionBudget, now: number, world: MoveWorld): MoveResult {
+export function validateMove(current: Pose, requested: Pose, budget: MotionBudget, now: number, world: MoveWorld, speedFactor = 1): MoveResult {
   const elapsed = Math.max(0, now - budget.at) / 1000;
-  const available = Math.min(MAX_BUDGET_METRES, budget.metres + elapsed * MAX_SPEED * SPEED_TOLERANCE);
+  const available = Math.min(MAX_BUDGET_METRES * speedFactor, budget.metres + elapsed * MAX_SPEED * SPEED_TOLERANCE * speedFactor);
   const verticalAvailable = budget.vertical + Math.min(elapsed, MAX_BUDGET_SECONDS) * MAX_VERTICAL_SPEED;
   const distance = Math.hypot(requested.x - current.x, requested.z - current.z);
   const rotY = normaliseAngle(requested.rotY);

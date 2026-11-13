@@ -22,7 +22,7 @@ export function stateIndex(state: PlayerAnimState): number {
   return PLAYER_ANIM_STATES.indexOf(state);
 }
 
-/** One tick row for player `id`. */
-export function encodePose(id: number, pose: Pose, corrected: boolean): PlayerTickRow {
-  return [id, toCm(pose.x), toCm(pose.y), toCm(pose.z), toRot16(pose.rotY), stateIndex(pose.state), corrected ? 1 : 0];
+/** One tick row for player `id` holding `tool`. */
+export function encodePose(id: number, pose: Pose, corrected: boolean, tool = 0): PlayerTickRow {
+  return [id, toCm(pose.x), toCm(pose.y), toCm(pose.z), toRot16(pose.rotY), stateIndex(pose.state), corrected ? 1 : 0, tool];
 }

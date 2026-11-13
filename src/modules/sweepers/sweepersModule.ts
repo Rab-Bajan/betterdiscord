@@ -1,8 +1,9 @@
 import type { DatabaseConnection, ModuleFactory } from '../../app/modules/ModuleFactory.ts';
 import type { Logger } from '../../core/logging/Logger.ts';
 import { voiceChannels } from '../../config/channels.ts';
-import { MISKOLC_SWEEPERS_MIGRATION } from '../../infrastructure/database/schema/migrations.ts';
+import { MISKOLC_STATS_JSON_MIGRATION, MISKOLC_SWEEPERS_MIGRATION } from '../../infrastructure/database/schema/migrations.ts';
 import { cityLayout } from './city/cityLayout.ts';
+import { debrisGrid } from './debris/grid.ts';
 import { SweepersBroadcaster } from './SweepersBroadcaster.ts';
 import { SweepersController } from './SweepersController.ts';
 import { SweepersRepository } from './SweepersRepository.ts';
@@ -16,6 +17,7 @@ import { SWEEPERS_EVENTS } from './types.ts';
 export function ensureSweepersSchema(database: DatabaseConnection, logger: Logger): boolean {
   try {
     MISKOLC_SWEEPERS_MIGRATION.apply(database.connection);
+    MISKOLC_STATS_JSON_MIGRATION.apply(database.connection);
     return true;
   } catch (err) {
     logger.error('MiskolcSweepers schema migration failed; the module is disabled', err);
@@ -31,8 +33,9 @@ export const sweepersModule: ModuleFactory<'sweepers'> = (deps) => {
   const logger = deps.logger.child('Sweepers');
   // Without its tables sweepers mounts no controller or providers; the rest of the server still starts.
   if (!ensureSweepersSchema(deps.database, logger)) return { api: { getSweepersSessions: () => ({}), getSession: () => null } };
-  // Generate the city once at startup (a few hundred ms), not inside the first player's join.
+  // Generate the city and the debris grid once at startup (a few hundred ms each), not inside the first player's join.
   cityLayout();
+  debrisGrid();
   const service = new SweepersService({
     store: new SweepersRepository(deps.database),
     events: new SweepersBroadcaster(deps.io),
