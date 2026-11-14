@@ -217,6 +217,6 @@ test('a Phase A room row (state_json { v: 1 }) still loads: defaults for the wor
   assert.deepEqual(init.weather, { kind: 'clear', untilServerTime: null });
   service.dispose();
   const state = store.rooms.get(ROOM)?.state;
-  assert.equal(state?.['v'], 3);
+  assert.equal(state?.['v'], 4);
   assert.deepEqual(state?.['weather'], freshWeather(ROOM));
 });

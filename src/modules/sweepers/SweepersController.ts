@@ -8,7 +8,10 @@ import { sweepersRoomOf } from './SweepersBroadcaster.ts';
 import { SWEEPERS_ERRORS, SweepersError } from './SweepersError.ts';
 import type { PlayerIdentity } from './SweepersPlayer.ts';
 import type { SweepersService } from './SweepersService.ts';
-import { parseBuyUpgrade, parsePlayerAction, parsePlayerInput, parseRoomRequest, parseSweepHit } from './payloads.ts';
+import {
+  parseBuyUpgrade, parseChannel, parseDeleteStructure, parseLogisticsAction, parsePlaceStructure, parsePlayerAction, parsePlayerInput,
+  parseRoomRequest, parseSweepHit, parseTieBag
+} from './payloads.ts';
 import { SWEEPERS_EVENTS } from './types.ts';
 
 const DEFAULT_AVATAR_COLOR = '#7655F5';
@@ -20,17 +23,25 @@ const SWEEP_RATE = 8;
 const ACTION_RATE = 5;
 const BUY_RATE = 2;
 const BUY_BURST = 3;
+/** Phase D: `tie_bag` 2/s burst 2; place + delete share 4/s burst 6; `logistics_action` 4/s burst 4. */
+const TIE_RATE = 2;
+const BUILD_RATE = 4;
+const BUILD_BURST = 6;
+const LOGISTICS_RATE = 4;
 
 const rateLimited = (): SweepersError => new SweepersError(SWEEPERS_ERRORS.tooManyRequests, undefined, SweepersError.RATE_LIMITED_CODE);
 
-/** Phase C rate limiters (injectable for tests). */
+/** Phase C/D rate limiters (injectable for tests). */
 export interface SweepersLimits {
   sweep: InputRateLimiter;
   action: InputRateLimiter;
   buy: InputRateLimiter;
+  tie: InputRateLimiter;
+  build: InputRateLimiter;
+  logistics: InputRateLimiter;
 }
 
-/** `miskolc:join_room`, `leave_room`, `player_input`, `sweep_hit`, `player_action`, `buy_upgrade` and the disconnect. */
+/** `miskolc:join_room`, `leave_room`, `player_input`, `sweep_hit`, `player_action`, `buy_upgrade`, the Phase D events and the disconnect. */
 export class SweepersController extends SocketController {
   readonly #service: SweepersService;
   readonly #users: UserRegistry;
@@ -44,6 +55,9 @@ export class SweepersController extends SocketController {
   readonly #sweepLimit: InputRateLimiter;
   readonly #actionLimit: InputRateLimiter;
   readonly #buyLimit: InputRateLimiter;
+  readonly #tieLimit: InputRateLimiter;
+  readonly #buildLimit: InputRateLimiter;
+  readonly #logisticsLimit: InputRateLimiter;
 
   constructor(
     service: SweepersService, users: UserRegistry, voiceChannels: readonly VoiceChannel[], logger: Logger,
@@ -59,6 +73,9 @@ export class SweepersController extends SocketController {
     this.#sweepLimit = limits.sweep ?? new InputRateLimiter(SWEEP_RATE, SWEEP_RATE);
     this.#actionLimit = limits.action ?? new InputRateLimiter(ACTION_RATE, ACTION_RATE);
     this.#buyLimit = limits.buy ?? new InputRateLimiter(BUY_RATE, BUY_BURST);
+    this.#tieLimit = limits.tie ?? new InputRateLimiter(TIE_RATE, TIE_RATE);
+    this.#buildLimit = limits.build ?? new InputRateLimiter(BUILD_RATE, BUILD_BURST);
+    this.#logisticsLimit = limits.logistics ?? new InputRateLimiter(LOGISTICS_RATE, LOGISTICS_RATE);
     this.#channels = new Set(voiceChannels.map((c) => c.id));
   }
 
@@ -100,8 +117,37 @@ export class SweepersController extends SocketController {
 
     this.listen(socket, SWEEPERS_EVENTS.playerAction, (payload) => {
       if (!this.#actionLimit.take(socket.id)) throw rateLimited();
-      this.#service.playerAction(socket.id, parsePlayerAction(payload));
+      const hopperKg = this.#service.playerAction(socket.id, parsePlayerAction(payload));
+      return hopperKg === null ? { ok: true } : { ok: true, hopperKg };
+    });
+
+    // Phase D: room → bucket → guard → rules (D.4 order).
+    const limited = (limiter: InputRateLimiter, payload: unknown): void => {
+      this.#service.assertInRoom(socket.id, parseChannel(payload));
+      if (!limiter.take(socket.id)) throw rateLimited();
+    };
+
+    this.listen(socket, SWEEPERS_EVENTS.tieBag, (payload) => {
+      limited(this.#tieLimit, payload);
+      const { channelId, tier } = parseTieBag(payload);
+      return this.#service.tieBag(socket.id, channelId, tier);
+    });
+
+    this.listen(socket, SWEEPERS_EVENTS.placeStructure, (payload) => {
+      limited(this.#buildLimit, payload);
+      return { ok: true, id: this.#service.placeStructure(socket.id, parsePlaceStructure(payload)) };
+    });
+
+    this.listen(socket, SWEEPERS_EVENTS.deleteStructure, (payload) => {
+      limited(this.#buildLimit, payload);
+      const { channelId, id } = parseDeleteStructure(payload);
+      this.#service.deleteStructure(socket.id, channelId, id);
       return { ok: true };
+    });
+
+    this.listen(socket, SWEEPERS_EVENTS.logisticsAction, (payload) => {
+      limited(this.#logisticsLimit, payload);
+      return this.#service.logisticsAction(socket.id, parseLogisticsAction(payload));
     });
 
     this.listen(socket, SWEEPERS_EVENTS.buyUpgrade, (payload) => {
@@ -115,6 +161,9 @@ export class SweepersController extends SocketController {
       this.#sweepLimit.forget(socket.id);
       this.#actionLimit.forget(socket.id);
       this.#buyLimit.forget(socket.id);
+      this.#tieLimit.forget(socket.id);
+      this.#buildLimit.forget(socket.id);
+      this.#logisticsLimit.forget(socket.id);
       this.#service.disconnect(socket.id);
     });
   }

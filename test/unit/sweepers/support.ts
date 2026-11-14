@@ -4,7 +4,7 @@ import { Logger } from '../../../src/core/logging/Logger.ts';
 import type { SweepersEvents } from '../../../src/modules/sweepers/SweepersBroadcaster.ts';
 import type { MoveWorld } from '../../../src/modules/sweepers/motion.ts';
 import type { PlayerIdentity } from '../../../src/modules/sweepers/SweepersPlayer.ts';
-import type { PlayerStatsRecord, RoomRecord, StoredPlayerStats, SweepersStore } from '../../../src/modules/sweepers/SweepersRepository.ts';
+import type { PlayerStatsRecord, RoomRecord, StoredPlayerStats, SweepersStore, WorldStructureRecord } from '../../../src/modules/sweepers/SweepersRepository.ts';
 import { SweepersService } from '../../../src/modules/sweepers/SweepersService.ts';
 import type { SweepersServiceOptions } from '../../../src/modules/sweepers/SweepersService.ts';
 
@@ -32,6 +32,7 @@ export class ManualScheduler {
 export class MemoryStore implements SweepersStore {
   readonly rooms = new Map<string, RoomRecord>();
   readonly stats = new Map<string, StoredPlayerStats>();
+  readonly structures = new Map<string, WorldStructureRecord[]>();
   saves = 0;
 
   loadRoom(roomId: string): RoomRecord | null {
@@ -43,10 +44,15 @@ export class MemoryStore implements SweepersStore {
     return stored ? structuredClone(stored) : null;
   }
 
-  saveRoom(room: RoomRecord, players: readonly PlayerStatsRecord[]): void {
+  loadStructures(roomId: string): WorldStructureRecord[] {
+    return structuredClone(this.structures.get(roomId) ?? []);
+  }
+
+  saveRoom(room: RoomRecord, players: readonly PlayerStatsRecord[], structures: readonly WorldStructureRecord[] | null = null): void {
     this.saves++;
     this.rooms.set(room.roomId, structuredClone(room));
     for (const p of players) this.savePlayerStats(p);
+    if (structures) this.structures.set(room.roomId, structuredClone([...structures]));
   }
 
   savePlayerStats({ userId, roomId, stats, extra }: PlayerStatsRecord): void {
@@ -70,6 +76,9 @@ export class RecordingEvents implements SweepersEvents {
   weather(...args: Parameters<SweepersEvents['weather']>): void { this.log.push(['weather', ...args]); }
   debrisUpdate(...args: Parameters<SweepersEvents['debrisUpdate']>): void { this.log.push(['debrisUpdate', ...args]); }
   personalUpdate(...args: Parameters<SweepersEvents['personalUpdate']>): void { this.log.push(['personalUpdate', ...args]); }
+  structureSpawned(...args: Parameters<SweepersEvents['structureSpawned']>): void { this.log.push(['structureSpawned', ...args]); }
+  logisticsUpdate(...args: Parameters<SweepersEvents['logisticsUpdate']>): void { this.log.push(['logisticsUpdate', ...args]); }
+  logisticsTelemetry(...args: Parameters<SweepersEvents['logisticsTelemetry']>): void { this.log.push(['logisticsTelemetry', ...args]); }
 
   /** Recorded calls of `name`, removing nothing. */
   of(name: string): unknown[][] {

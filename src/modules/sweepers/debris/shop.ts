@@ -3,21 +3,26 @@ import type { CityLayout } from '../city/layoutTypes.ts';
 import { notEnoughCash, SWEEPERS_ERRORS, SweepersError } from '../SweepersError.ts';
 import { ownsTool } from './personal.ts';
 import type { PersonalData } from './personal.ts';
+import { bagTier } from '../logistics/tables.ts';
 import {
   FUEL_COST, FUEL_TANK_ML, GLOVES_COST, HARD_COST, PACK_COST, REFRESHMENTS, REPAIR_SHARE, STAMINA_MAX, toolOf, WIDTH_COST
 } from './tables.ts';
 
-export const BUY_ITEMS = Object.freeze(['tool', 'width', 'pack', 'hard', 'gloves', 'repair', 'fuel', 'beer', 'kofola', 'zsiros'] as const);
+export const BUY_ITEMS = Object.freeze(['tool', 'width', 'pack', 'hard', 'gloves', 'repair', 'fuel', 'beer', 'kofola', 'zsiros', 'bag'] as const);
+/** Bag quantities per purchase (Phase D). */
+export const BAG_QTY = Object.freeze([1, 5, 10] as const);
 export type BuyItem = (typeof BUY_ITEMS)[number];
 
 /** A parsed `miskolc:buy_upgrade`. */
 export interface BuyRequest {
   channelId: string;
   item: BuyItem;
-  /** Tool id: 1..6 for `tool`, 1..3 for `repair`. */
+  /** Tool id: 1..6 for `tool`, 1..3 for `repair`; bag tier 0..2 for `bag`. */
   tier?: number;
   /** Target level for width / pack / hard. */
   level?: number;
+  /** Bags bought at once (`bag`: 1, 5 or 10). */
+  qty?: number;
 }
 
 export const WORKBENCH_RADIUS_M = 8;
@@ -100,6 +105,15 @@ export function buy(data: PersonalData, request: BuyRequest, layout: CityLayout,
       pay(data, FUEL_COST);
       data.fuelMl = FUEL_TANK_ML;
       return 'Benzin';
+    case 'bag': {
+      const tier = request.tier ?? 0;
+      const qty = request.qty ?? 1;
+      const spec = bagTier(tier);
+      if ((data.bags[tier] ?? 0) + qty > spec.stockCap) throw refuse('bagStockFull');
+      pay(data, spec.cost * qty);
+      data.bags[tier] = (data.bags[tier] ?? 0) + qty;
+      return spec.name;
+    }
   }
 }
 

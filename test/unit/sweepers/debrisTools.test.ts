@@ -88,7 +88,7 @@ test('piles: the 3× rule per stroke, then the scoop tips the buffer and takes t
   const full = personal({ owned: owning(2), toolTier: 2 });
   full.pack.ironG = 10_000;
   full.buf.dustG = 100;
-  assert.throws(() => useTool(context(world, full), 2, true, OX, OZ, 0), refusedWith('Tele a hátizsák – borítsd ki (G).'));
+  assert.throws(() => useTool(context(world, full), 2, true, OX, OZ, 0), refusedWith('Tele a hátizsák – zsákold be (Q) vagy borítsd ki (G).'));
 });
 
 test('vacuum: 4 % can clog refuses until the reverse blow; a full tank refuses with tankFull', () => {
@@ -283,4 +283,15 @@ test('locked districts: a push pile never lands in a locked district, it steps b
   assert.equal(result.pushed, true);
   const piles = [...world.items.values()].filter((item) => item.kind === KIND.pile);
   assert.ok(piles.length > 0 && piles.every((p) => p.x < 34.64), 'every pile stays in district 0');
+});
+
+test('WC brush: every stroke on dirt takes some, wherever the player stands (the 0.25 m band falls back to the cell under its midpoint)', () => {
+  for (const [x, z] of [[4, 4], [10, -4], [4.1, 4.1], [3.3, -2.7], [0.5, 1], [-6.75, 5.2]] as const) {
+    for (const rotY of [0, Math.PI / 2, Math.PI, -Math.PI / 2, 0.4]) {
+      const world = emptyWorld();
+      paint(world, x, z, 2, 0xf0);
+      const result = useTool(context(world, personal()), 0, false, x, z, rotY);
+      assert.ok(result.kg > 0, `(${x}, ${z}) rotY ${rotY}`);
+    }
+  }
 });

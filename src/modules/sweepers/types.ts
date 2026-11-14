@@ -1,10 +1,11 @@
-// MiskolcSweepers wire protocol (Phases A–C). Units: metres, y-up, rotation in radians.
+// MiskolcSweepers wire protocol (Phases A–D). Units: metres, y-up, rotation in radians.
 // Later phases extend these shapes; they never rename a field or an event.
 
 import type { CityLayout } from './city/layoutTypes.ts';
 import type { ClockState } from './dayClock.ts';
 import type { ItemRow, KickRow } from './debris/DebrisWorld.ts';
 import type { PersonalStatePayload } from './debris/personal.ts';
+import type { LogisticsInit, StructRow } from './logistics/LogisticsWorld.ts';
 import type { WeatherPayload } from './weather.ts';
 
 /** Animation / activity state of a player; the index of each entry is the protocol value. */
@@ -32,7 +33,14 @@ export const SWEEPERS_EVENTS = Object.freeze({
   playerAction: 'miskolc:player_action',
   buyUpgrade: 'miskolc:buy_upgrade',
   debrisChunkUpdate: 'miskolc:debris_chunk_update',
-  personalUpdate: 'miskolc:personal_update'
+  personalUpdate: 'miskolc:personal_update',
+  tieBag: 'miskolc:tie_bag',
+  placeStructure: 'miskolc:place_structure',
+  deleteStructure: 'miskolc:delete_structure',
+  logisticsAction: 'miskolc:logistics_action',
+  structureSpawned: 'miskolc:structure_spawned',
+  logisticsUpdate: 'miskolc:logistics_update',
+  logisticsTelemetry: 'miskolc:logistics_telemetry'
 } as const);
 
 /** Position, heading and activity of a player. */
@@ -53,6 +61,8 @@ export interface PlayerSnapshot extends Pose {
   avatarColor: string;
   /** Equipped tool 0..7 (Phase C). */
   tool: number;
+  /** Carried bag id, 0 when none (Phase D). */
+  carry: number;
 }
 
 /** One hex of the 37-hex district grid. */
@@ -95,6 +105,15 @@ export interface InitStatePayload {
   weather: WeatherPayload;
   /** Debris grid geometry (Phase C). */
   debris: DebrisInfo;
+  /** The logistics network (Phase D). */
+  logistics: LogisticsInit;
+}
+
+/** `miskolc:structure_spawned`, room-wide on a place. */
+export interface StructureSpawnedPayload {
+  row: StructRow;
+  /** Short id of the builder. */
+  by: number;
 }
 
 /** `init_state.debris`: the chunk grid the client mirrors. */
@@ -137,8 +156,8 @@ export interface DistrictUnlockedPayload {
   unlockedDistricts: number[];
 }
 
-/** `[id, xCm, yCm, zCm, rot16, stateIdx, corr0|1, tool]`, all integers (`tool` since Phase C). */
-export type PlayerTickRow = [number, number, number, number, number, number, 0 | 1, number];
+/** `[id, xCm, yCm, zCm, rot16, stateIdx, corr0|1, tool, carry]`, all integers (`tool` since Phase C, `carry` since Phase D). */
+export type PlayerTickRow = [number, number, number, number, number, number, 0 | 1, number, number];
 
 /** `miskolc:tick_sync`, broadcast to the room only when something changed. */
 export interface TickSyncPayload {

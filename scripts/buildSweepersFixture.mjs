@@ -18,6 +18,7 @@ const rooms = new Map();
 const store = {
   loadRoom: (id) => rooms.get(id) ?? null,
   loadPlayerStats: () => null,
+  loadStructures: () => [],
   saveRoom: (room) => { rooms.set(room.roomId, room); },
   savePlayerStats: () => undefined
 };

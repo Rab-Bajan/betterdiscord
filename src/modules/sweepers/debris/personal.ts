@@ -6,6 +6,7 @@ import {
   ALWAYS_OWNED, CAN_KG, CAN_L, COPPER_L_PER_KG, CRUSHED_L, DUST_L_PER_KG, FUEL_TANK_ML, IRON_L_PER_KG, jackpotOf, PACK_KG, PACK_L,
   SEED_L_PER_KG, STAMINA_MAX, STARTER_GRANT_FT, TOOL_COUNT, toolOf, WIDTH_BONUS, HARD_EFF
 } from './tables.ts';
+import { BAG_TIERS, STARTER_BAGS } from '../logistics/tables.ts';
 
 /** Contents of a tool buffer or the backpack (internal: float grams). */
 export interface Load {
@@ -47,6 +48,10 @@ export interface PersonalData extends PersonalStats {
   pack: Load;
   /** Effect end, server time (ms). */
   fx: Effects;
+  /** Bag stock by tier (Phase D). */
+  bags: [number, number, number];
+  /** The one-time starter bag kit has been given. */
+  starterBags: boolean;
 }
 
 /** `miskolc:personal_update` and `init_state.personal`. */
@@ -63,10 +68,12 @@ export interface PersonalStatePayload extends PersonalStats {
   pack: LoadPayload;
   caps: { bufKg: number; packKg: number; packL: number };
   fx: Effects;
+  /** Bag stock by tier (Phase D). */
+  bags: [number, number, number];
 }
 
 export const EFFECT_NAMES: readonly EffectName[] = Object.freeze(['stench', 'beer', 'kofola']);
-export const STATS_JSON_VERSION = 2;
+export const STATS_JSON_VERSION = 3;
 
 export const emptyLoad = (): Load => ({ dustG: 0, seedG: 0, cans: 0, crushed: 0, ironG: 0, copperG: 0, jackpots: [] });
 
@@ -136,7 +143,8 @@ export function personalPayload(data: PersonalData, now: number): PersonalStateP
     buf: loadPayload(data.buf),
     pack: loadPayload(data.pack),
     caps: { bufKg: bufferCap(data), packKg: packCapKg(data), packL: packCapL(data) },
-    fx
+    fx,
+    bags: [...data.bags]
   };
 }
 
@@ -170,7 +178,7 @@ const serialiseLoad = (load: Load): Load => ({ ...load, jackpots: [...load.jackp
 /** Result of {@link parsePersonal}. */
 export interface ParsedPersonal {
   data: PersonalData;
-  /** True when the starter grant was paid by this load (the caller persists at once). */
+  /** True when the starter grant or the starter bag kit was given by this load (the caller persists at once). */
   granted: boolean;
 }
 
@@ -190,6 +198,8 @@ export function parsePersonal(stats: PersonalStats, extra: Record<string, unknow
     if (isNum(remaining) && remaining > 0) fx[name] = now + Math.min(remaining, 3_600_000);
   }
   const toolTier = intIn(stats.toolTier, 0, TOOL_COUNT - 1, 0);
+  const bagsRaw = Array.isArray(json['bags']) ? json['bags'] : [];
+  const bagStock = (tier: number): number => Math.min(BAG_TIERS[tier]?.stockCap ?? 0, intIn(bagsRaw[tier], 0, MAX_COUNT, 0));
   const data: PersonalData = {
     cash: isNum(stats.cash) ? Math.max(0, Math.round(stats.cash)) : 0,
     toolTier: (owned & (1 << toolTier)) !== 0 ? toolTier : 0,
@@ -206,12 +216,23 @@ export function parsePersonal(stats: PersonalStats, extra: Record<string, unknow
     clogged: json['clogged'] === true,
     buf: parseLoad(json['buf']),
     pack: parseLoad(json['pack']),
-    fx
+    fx,
+    bags: [bagStock(0), bagStock(1), bagStock(2)],
+    starterBags: json['starterBags'] === true
   };
-  if (data.starter) return { data, granted: false };
-  data.cash += STARTER_GRANT_FT;
-  data.starter = true;
-  return { data, granted: true };
+  let granted = false;
+  if (!data.starter) {
+    data.cash += STARTER_GRANT_FT;
+    data.starter = true;
+    granted = true;
+  }
+  if (!data.starterBags) {
+    const kit = (t: number): number => Math.min(BAG_TIERS[t]?.stockCap ?? 0, (data.bags[t] ?? 0) + (STARTER_BAGS[t] ?? 0));
+    data.bags = [kit(0), kit(1), kit(2)];
+    data.starterBags = true;
+    granted = true;
+  }
+  return { data, granted };
 }
 
 /** `stats_json` of a personal state; effects are stored as remaining ms (server time does not survive a restart). */
@@ -234,7 +255,9 @@ export function serialisePersonal(data: PersonalData, now: number): Record<strin
     buf: serialiseLoad(data.buf),
     pack: serialiseLoad(data.pack),
     clogged: data.clogged,
-    fx
+    fx,
+    bags: [...data.bags],
+    starterBags: data.starterBags
   };
 }
 

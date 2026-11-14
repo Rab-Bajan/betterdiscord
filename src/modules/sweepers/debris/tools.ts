@@ -118,34 +118,44 @@ function planCells(ctx: UseContext, region: Region, tool: number, classes: { dus
   const stench = effectActive(ctx.data, 'stench', ctx.now) ? 0.5 : 1;
   const grid = ctx.world.grid;
   const plans: Array<CellPlan & { d: number }> = [];
+  let centres = 0;
+  const visit = (gx: number, gz: number): void => {
+    const index = liveIndex(grid, gx, gz);
+    if (index < 0) return;
+    const hex = grid.cellHex[index] ?? -1;
+    if (hex < 0) return;
+    const district = hexDistrict(hex);
+    if (!ctx.unlocked.has(district)) return;
+    const x = cellCentre(gx);
+    const z = cellCentre(gz);
+    const byte = ctx.world.cells[index] ?? 0;
+    if (byte === 0) return;
+    const surface = grid.cellSurface[index] ?? 0;
+    const dry = surface === 0 && !ctx.drizzle;
+    const f = sweepFraction(spec.speed, spec.cadence, stench * (tool === 2 && dry ? 1.15 : 1), area);
+    const heavy = district === 3 || (surface >= 1 && surface <= 3) || ctx.drizzle;
+    const effDust = (tool === 1 ? 0.6 : 1) * (heavy ? 0.5 * hardEff(ctx.data) : 1);
+    const dust = byte >> 4;
+    const seed = byte & 15;
+    const newDust = classes.dust ? reducedLevel(dust, f, Math.min(1, effDust)) : dust;
+    const newSeed = classes.seed ? reducedLevel(seed, f, 1) : seed;
+    if (newDust === dust && newSeed === seed) return;
+    plans.push({
+      index, byte: (newDust << 4) | newSeed, d: Math.hypot(x - region.ox, z - region.oz),
+      dustKg: dustKg(dust, district) - dustKg(newDust, district), seedKg: seedKg(seed, district) - seedKg(newSeed, district)
+    });
+  };
   for (let gz = cellCoord(region.oz - ext); gz <= cellCoord(region.oz + ext); gz++) {
     for (let gx = cellCoord(region.ox - ext); gx <= cellCoord(region.ox + ext); gx++) {
-      const index = liveIndex(grid, gx, gz);
-      if (index < 0) continue;
-      const hex = grid.cellHex[index] ?? -1;
-      if (hex < 0) continue;
-      const district = hexDistrict(hex);
-      if (!ctx.unlocked.has(district)) continue;
-      const x = cellCentre(gx);
-      const z = cellCentre(gz);
-      if (!inRegion(region, x, z)) continue;
-      const byte = ctx.world.cells[index] ?? 0;
-      if (byte === 0) continue;
-      const surface = grid.cellSurface[index] ?? 0;
-      const dry = surface === 0 && !ctx.drizzle;
-      const f = sweepFraction(spec.speed, spec.cadence, stench * (tool === 2 && dry ? 1.15 : 1), area);
-      const heavy = district === 3 || (surface >= 1 && surface <= 3) || ctx.drizzle;
-      const effDust = (tool === 1 ? 0.6 : 1) * (heavy ? 0.5 * hardEff(ctx.data) : 1);
-      const dust = byte >> 4;
-      const seed = byte & 15;
-      const newDust = classes.dust ? reducedLevel(dust, f, Math.min(1, effDust)) : dust;
-      const newSeed = classes.seed ? reducedLevel(seed, f, 1) : seed;
-      if (newDust === dust && newSeed === seed) continue;
-      plans.push({
-        index, byte: (newDust << 4) | newSeed, d: Math.hypot(x - region.ox, z - region.oz),
-        dustKg: dustKg(dust, district) - dustKg(newDust, district), seedKg: seedKg(seed, district) - seedKg(newSeed, district)
-      });
+      if (!inRegion(region, cellCentre(gx), cellCentre(gz))) continue;
+      centres++;
+      visit(gx, gz);
     }
+  }
+  // An arc band narrower than the 0.5 m cell pitch (the WC brush, 0.25 m) can hold no cell centre: it then takes the cell under its midpoint.
+  if (centres === 0 && region.kind === 'arc') {
+    const dir = dirOf(region.rotY);
+    visit(cellCoord(region.ox + dir.x * region.reach), cellCoord(region.oz + dir.z * region.reach));
   }
   return plans.sort((a, b) => a.d - b.d || a.index - b.index);
 }

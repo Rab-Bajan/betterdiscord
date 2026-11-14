@@ -183,7 +183,7 @@ test('tick rows carry the tool; select tips the buffer (overflow spilled), refus
   events.clear();
   tick();
   const row = (events.of('tickSync')[0]?.[1] as TickSyncPayload).p.find((r: PlayerTickRow) => r[0] === player.id);
-  assert.equal(row?.length, 8);
+  assert.equal(row?.length, 9);
   assert.equal(row?.[7], 7);
   // Overflow on a tool switch: the pack is full, so the buffer is dropped at the feet.
   player.personal.owned |= 1 << 3;
@@ -352,7 +352,7 @@ test('room persistence: v2 → v3, v3 round trip (cells and items), a corrupt bl
   const marker = put(room.debris, KIND.iron, 3, 3, 777);
   first.service.dispose();
   const stored = first.store.rooms.get(ROOM);
-  assert.equal(stored?.state['v'], 3);
+  assert.equal(stored?.state['v'], 4);
   assert.ok(Math.abs((stored?.cleanliness['0'] ?? 0) - 40) <= 2);
   const debris = stored?.state['debris'];
   assert.ok(typeof debris === 'object' && debris !== null);

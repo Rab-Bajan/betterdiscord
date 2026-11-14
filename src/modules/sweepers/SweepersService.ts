@@ -4,11 +4,11 @@ import { SWEEPERS_ERRORS, SweepersError } from './SweepersError.ts';
 import type { PlayerIdentity, SweepersPlayer } from './SweepersPlayer.ts';
 import type { SweepersStore } from './SweepersRepository.ts';
 import { NEW_PLAYER_STATS, SweepersRoom } from './SweepersRoom.ts';
-import type { SweepAck } from './SweepersRoom.ts';
+import type { SweepAck, TieAck } from './SweepersRoom.ts';
 import { parsePersonal } from './debris/personal.ts';
 import type { PersonalData } from './debris/personal.ts';
 import type { BuyRequest } from './debris/shop.ts';
-import type { PlayerAction, PlayerInput, SweepHit } from './payloads.ts';
+import type { LogisticsAction, PlaceStructure, PlayerAction, PlayerInput, SweepHit } from './payloads.ts';
 import type { SweepersSessionSummary } from './types.ts';
 
 /** Server time source (ms). */
@@ -180,10 +180,36 @@ export class SweepersService {
     return room.sweepHit(player, hit, this.#clock.now());
   }
 
-  /** `miskolc:player_action`: select a tool, kick a can, dump the pack. */
-  playerAction(socketId: string, action: PlayerAction): void {
+  /** `miskolc:player_action`: select a tool, kick a can, dump the pack; a dump into a hopper returns the kg moved. */
+  playerAction(socketId: string, action: PlayerAction): number | null {
     const { room, player } = this.#playerOf(socketId, action.channelId);
-    room.action(player, action, this.#clock.now());
+    return room.action(player, action, this.#clock.now());
+  }
+
+  /** `miskolc:tie_bag`; the bag row and the personal update follow with the next tick. */
+  tieBag(socketId: string, channelId: string, tier: number): TieAck {
+    const { room, player } = this.#playerOf(socketId, channelId);
+    return room.tieBag(player, tier, this.#clock.now());
+  }
+
+  /** `miskolc:place_structure`: places it and sends `structure_spawned` to the world at once; returns the new id. */
+  placeStructure(socketId: string, request: PlaceStructure): number {
+    const { room, player } = this.#playerOf(socketId, request.channelId);
+    const row = room.placeStructure(player, request);
+    this.#events.structureSpawned(room.channelId, { row, by: player.id });
+    return row[0];
+  }
+
+  /** `miskolc:delete_structure`; the removal goes out in the next `logistics_update`. */
+  deleteStructure(socketId: string, channelId: string, id: number): void {
+    const { room, player } = this.#playerOf(socketId, channelId);
+    room.deleteStructure(player, id);
+  }
+
+  /** `miskolc:logistics_action` (pickup, throw, clearJam, crane, telemetry); returns the ack. */
+  logisticsAction(socketId: string, action: LogisticsAction): ReturnType<SweepersRoom['logisticsAction']> {
+    const { room, player } = this.#playerOf(socketId, action.channelId);
+    return room.logisticsAction(player, action, this.#clock.now());
   }
 
   /** `miskolc:buy_upgrade`; returns the cash left (the personal update follows with the next tick). */
@@ -217,7 +243,10 @@ export class SweepersService {
       for (const out of room.tickDebris(now)) {
         if (out.debris) this.#events.debrisUpdate(out.socketId, out.debris);
         if (out.personal) this.#events.personalUpdate(out.socketId, out.personal);
+        if (out.telemetry) this.#events.logisticsTelemetry(out.socketId, out.telemetry);
       }
+      const logistics = room.takeLogisticsUpdate(now);
+      if (logistics) this.#events.logisticsUpdate(room.channelId, logistics);
       this.#advanceWeather(room, now);
       if (now - room.lastClockSyncAt >= this.#timings.clockSyncMs) {
         room.lastClockSyncAt = now;
@@ -276,7 +305,12 @@ export class SweepersService {
   #room(channelId: string, startedBy: string, now: number): SweepersRoom {
     let room = this.#rooms.get(channelId);
     if (!room) {
-      room = new SweepersRoom(channelId, startedBy, this.#safely('load room', () => this.#store.loadRoom(channelId)) ?? null, now);
+      const saved = this.#safely('load room', () => this.#store.loadRoom(channelId)) ?? null;
+      const structures = this.#safely('load structures', () => this.#store.loadStructures(channelId));
+      room = new SweepersRoom(channelId, startedBy, saved, now, structures ?? []);
+      // An unread structure table must never be replaced by this room's (incomplete) set.
+      if (structures === undefined) room.structuresUnreadable = true;
+      for (const warning of room.loadWarnings) this.#log.warn(`MiskolcSweepers ${channelId}: ${warning}`);
       this.#rooms.set(channelId, room);
       this.#log.info(`MiskolcSweepers világ betöltve: ${channelId}`);
       if (!this.#disposed) this.#cancelLoop ??= this.#scheduler(Math.round(1000 / this.#timings.tickRate), () => this.#safely('tick', () => this.tick()));
@@ -297,7 +331,10 @@ export class SweepersService {
 
   #save(room: SweepersRoom, now: number): void {
     const players = [...room.players()].map((p) => room.statsRecord(p, now));
-    this.#safely('save room', () => this.#store.saveRoom(room.record(now), players));
+    const structures = room.structureRecords();
+    const saved = this.#safely('save room', () => { this.#store.saveRoom(room.record(now), players, structures); return true; });
+    // A failed save keeps the structure changes pending for the next one.
+    if (!saved && structures) room.logistics.markStructuresDirty();
     room.lastSavedAt = now;
   }
 

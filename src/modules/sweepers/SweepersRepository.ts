@@ -45,8 +45,13 @@ export interface WorldStructureRecord {
 export interface SweepersStore {
   loadRoom(roomId: string): RoomRecord | null;
   loadPlayerStats(userId: string, roomId: string): StoredPlayerStats | null;
-  /** Upserts the room and the given players' stats in one transaction. */
-  saveRoom(room: RoomRecord, players: readonly PlayerStatsRecord[]): void;
+  /** The room's structure rows (Phase D), in insertion order. */
+  loadStructures(roomId: string): WorldStructureRecord[];
+  /**
+   * Upserts the room and the given players' stats in one transaction; `structures` (when not null)
+   * replaces the room's structure rows in the same transaction. null means unchanged.
+   */
+  saveRoom(room: RoomRecord, players: readonly PlayerStatsRecord[], structures: readonly WorldStructureRecord[] | null): void;
   savePlayerStats(record: PlayerStatsRecord): void;
 }
 
@@ -99,6 +104,7 @@ const UPSERT_STATS_SQL = `
     stats_json = excluded.stats_json
 `;
 const LOAD_STRUCTURES_SQL = 'SELECT * FROM miskolc_world_structures WHERE room_id = ? ORDER BY rowid';
+const DELETE_STRUCTURES_SQL = 'DELETE FROM miskolc_world_structures WHERE room_id = ?';
 const UPSERT_STRUCTURE_SQL = `
   INSERT INTO miskolc_world_structures (id, room_id, type, x, y, z, rot_y, config_json)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -152,13 +158,20 @@ export class SweepersRepository extends BaseRepository implements SweepersStore 
     };
   }
 
-  saveRoom(room: RoomRecord, players: readonly PlayerStatsRecord[]): void {
+  saveRoom(room: RoomRecord, players: readonly PlayerStatsRecord[], structures: readonly WorldStructureRecord[] | null = null): void {
     this.db.transaction(() => {
       this.statement(UPSERT_ROOM_SQL).run(
         room.roomId, JSON.stringify(room.state), JSON.stringify(room.cleanliness), Math.round(room.teamFunds), room.lastSaved
       );
       for (const player of players) this.savePlayerStats(player);
+      if (structures) this.replaceStructures(room.roomId, structures);
     })();
+  }
+
+  /** Replaces every structure row of a room (DELETE by room + INSERTs); callers wrap it in a transaction. */
+  replaceStructures(roomId: string, records: readonly WorldStructureRecord[]): void {
+    this.statement(DELETE_STRUCTURES_SQL).run(roomId);
+    for (const record of records) this.upsertStructure(record);
   }
 
   savePlayerStats({ userId, roomId, stats, extra }: PlayerStatsRecord): void {

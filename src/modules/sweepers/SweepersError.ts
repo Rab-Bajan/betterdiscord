@@ -27,7 +27,7 @@ export const SWEEPERS_ERRORS = Object.freeze({
   notEquipped: 'Nem ez az eszköz van a kezedben.',
   exhausted: 'Kifulladtál – pihenj egy kicsit!',
   tankFull: 'Tele a tartály.',
-  packFull: 'Tele a hátizsák – borítsd ki (G).',
+  packFull: 'Tele a hátizsák – zsákold be (Q) vagy borítsd ki (G).',
   tooHeavy: 'Ez túl nehéz vagy túl nagy a hátizsákodnak.',
   noFuel: 'Kifogyott a benzin – tankolj a MÉH műhelyben.',
   clogged: 'Eldugult a cső – fújd ki (jobb klikk)!',
@@ -40,8 +40,36 @@ export const SWEEPERS_ERRORS = Object.freeze({
   staleLevel: 'Közben változott a szinted, próbáld újra.',
   noRepairNeeded: 'Ez az eszköz nem szorul javításra.',
   emptyPack: 'Üres a hátizsák.',
-  unknownItem: 'Ismeretlen tárgy.'
+  unknownItem: 'Ismeretlen tárgy.',
+  // Phase D (plan D.8).
+  handsFull: 'Tele a kezed – előbb tedd le a zsákot.',
+  notCarrying: 'Nincs a kezedben zsák.',
+  noBags: 'Nincs ilyen zsákod – vegyél a MÉH műhelyben.',
+  bagTooSmall: 'Ez nem fér bele ebbe a zsákba.',
+  tooManyBags: 'Túl sok zsák van már ebben a világban.',
+  bagStockFull: 'Ebből a zsákból nem fér több a raktáradba.',
+  noBagNear: 'Nincs zsák a közelben.',
+  bigBagCrane: 'A Big-Bag-et csak daruval lehet mozgatni.',
+  outOfGrid: 'A városon kívül nem építhetsz.',
+  reserved: 'Ez a terület foglalt (mérleg, garat vagy daru).',
+  buildLimit: 'Elérted az építési korlátot: {what}.',
+  blocked: 'Ide nem lehet építeni: valami útban van.',
+  notFlat: 'Túl egyenetlen a talaj – rakj le előbb betonalapot.',
+  supportsStructures: 'Előbb bontsd le, ami rajta áll.',
+  unknownStructure: 'Ismeretlen épületelem.',
+  notJammed: 'Ez a szalag nincs elakadva.',
+  needBroom: 'Seprűvel kell megütni a vészgombot.',
+  notAtCrane: 'A darut a vezérlőpultnál irányíthatod.',
+  craneBusy: 'A daru éppen dolgozik.',
+  craneTargetBusy: 'A célhely foglalt.',
+  notInCraneArea: 'Ez a zsák nincs a daru hatókörében.',
+  hopperFull: 'Tele a garat.',
+  notAtTerminal: 'A logisztikai terminál a MÉH irodánál van.'
 });
+
+/** A refusal with the D.8 / C.8 text of `key` (`SWEEPERS_REFUSED`). */
+export const refusal = (key: keyof typeof SWEEPERS_ERRORS, details: Record<string, unknown> = {}): SweepersError =>
+  new SweepersError(SWEEPERS_ERRORS[key], { reason: key, ...details });
 
 /** `notEnoughCash` with the price filled in (thousands grouped with a space: 1 500). */
 export function notEnoughCash(price: number): string {

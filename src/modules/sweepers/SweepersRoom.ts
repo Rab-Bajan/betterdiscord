@@ -5,20 +5,30 @@ import { JOIN_BURST_CHUNKS, LOAD_RADIUS_M, TICK_MAX_CHUNKS, TICK_MAX_LOAD_BYTES 
 import { DebrisWorld } from './debris/DebrisWorld.ts';
 import type { DebrisDeltas } from './debris/DebrisWorld.ts';
 import { CELL_M, CHUNK_M, CHUNKS_N, GRID_ORIGIN } from './debris/grid.ts';
-import { effectActive, isEmptyLoad, ownsTool, personalPayload, serialisePersonal, v1Stats } from './debris/personal.ts';
+import { effectActive, emptyLoad, isEmptyLoad, loadKg, loadL, ownsTool, personalPayload, serialisePersonal, v1Stats } from './debris/personal.ts';
 import type { PersonalData, PersonalStatePayload } from './debris/personal.ts';
 import { buy } from './debris/shop.ts';
 import type { BuyRequest } from './debris/shop.ts';
 import { DEBRIS_GEN, KIND, KOFOLA_SPEED, FLAG_STUCK, STAMINA_MAX } from './debris/tables.ts';
-import { cadenceOf, drainBuffer, kickCan, spill, tipBuffer, useTool } from './debris/tools.ts';
+import { cadenceOf, drainBuffer, kickCan, moveLoad, spill, tipBuffer, useTool } from './debris/tools.ts';
 import type { UseResult } from './debris/tools.ts';
-import { ColliderIndex, groundHeight, surfaceAt, sweepCircle } from './geometry.ts';
+import { groundHeight, surfaceAt, sweepCircle } from './geometry.ts';
+import type { ColliderIndex } from './geometry.ts';
+import { centreDistance, footprintDistance, LogisticsWorld } from './logistics/LogisticsWorld.ts';
+import type { LogisticsTelemetry, LogisticsUpdate, StructRow, ThrowResult } from './logistics/LogisticsWorld.ts';
+import { encodeLogistics, loadStructures, restoreLogistics, structureRecords } from './logistics/persist.ts';
+import { checkPlacement, PLACE_REACH_M } from './logistics/placement.ts';
+import type { PlaceSpec } from './logistics/placement.ts';
+import { inRect } from './logistics/shapes.ts';
+import {
+  bagTier, BIG_BAG, CAP_NAMES, CAPS, CLEAR_JAM_REACH_M, CRANE, PICKUP_HEIGHT_M, PICKUP_REACH_M, TELEMETRY_OFF_M, TELEMETRY_ON_M, TIE_CADENCE_MS
+} from './logistics/tables.ts';
 import { districtAt, HEX_CELLS, initialCleanliness } from './hexGrid.ts';
 import { MAX_SPEED, SPEED_TOLERANCE } from './motion.ts';
 import type { MoveWorld } from './motion.ts';
-import type { PlayerAction, SweepHit } from './payloads.ts';
+import type { LogisticsAction, PlayerAction, SweepHit } from './payloads.ts';
 import { hashString, Rng } from './random.ts';
-import { SWEEPERS_ERRORS, SweepersError } from './SweepersError.ts';
+import { refusal, SWEEPERS_ERRORS, SweepersError } from './SweepersError.ts';
 import { DISTRICT_IDS, unlockedFor } from './progression.ts';
 import { parseRoomState, serialiseRoomState } from './roomState.ts';
 import { WeatherScheduler } from './weather.ts';
@@ -26,7 +36,7 @@ import type { WeatherPayload } from './weather.ts';
 import { encodePose } from './quantize.ts';
 import { SweepersPlayer } from './SweepersPlayer.ts';
 import type { PlayerIdentity } from './SweepersPlayer.ts';
-import type { PlayerStatsRecord, RoomRecord } from './SweepersRepository.ts';
+import type { PlayerStatsRecord, RoomRecord, WorldStructureRecord } from './SweepersRepository.ts';
 import type {
   ChunkLoad, DebrisChunkUpdate, HexSnapshot, InitStatePayload, PersonalStats, PlayerSnapshot, PlayerTickRow, Pose, SweepersSessionSummary,
   TickSyncPayload
@@ -74,28 +84,37 @@ export interface SweepAck extends UseResult {
   seq: number;
 }
 
-/** One socket's outgoing debris and personal messages of a tick. */
+/** One socket's outgoing debris, personal and telemetry messages of a tick. */
 export interface PlayerTickOutput {
   socketId: string;
   debris: DebrisChunkUpdate | null;
   personal: PersonalStatePayload | null;
+  /** 1 Hz to subscribed sockets (Phase D). */
+  telemetry: LogisticsTelemetry | null;
 }
+
+/** `tie_bag` ack. */
+export interface TieAck {
+  ok: true;
+  id: number;
+  tier: number;
+  kg: number;
+}
+
+/** Telemetry is sent this often to subscribers, ms. */
+export const TELEMETRY_MS = 1_000;
 
 const r3 = (v: number): number => Math.round(v * 1000) / 1000 + 0;
 const tooFast = (): SweepersError => new SweepersError(SWEEPERS_ERRORS.tooManyRequests, undefined, SweepersError.TOO_FAST_CODE);
-const refuse = (key: keyof typeof SWEEPERS_ERRORS): SweepersError => new SweepersError(SWEEPERS_ERRORS[key], { reason: key });
+const refuse = refusal;
 
-let colliderIndex: ColliderIndex | null = null;
-
-/** The movement rules of the city with the given open districts (the set is read live). */
-function cityMoveWorld(unlocked: ReadonlySet<number>): MoveWorld {
+/** The movement rules of the city with the given open districts and colliders (both read live). */
+function cityMoveWorld(unlocked: ReadonlySet<number>, colliders: () => ColliderIndex): MoveWorld {
   const layout = cityLayout();
-  colliderIndex ??= new ColliderIndex(layout.colliders);
-  const index = colliderIndex;
   return {
     ground: (x, z) => groundHeight(layout.heightfield, x, z),
     isOpen: (x, z) => unlocked.has(districtAt(x, z)),
-    sweep: (fromX, fromZ, toX, toZ) => sweepCircle(index, fromX, fromZ, toX, toZ)
+    sweep: (fromX, fromZ, toX, toZ) => sweepCircle(colliders(), fromX, fromZ, toX, toZ)
   };
 }
 
@@ -126,6 +145,17 @@ export class SweepersRoom {
   readonly #weather: WeatherScheduler;
   /** The room's debris (Phase C); hex cleanliness derives from it. */
   readonly debris: DebrisWorld;
+  /** The logistics network (Phase D). */
+  readonly logistics: LogisticsWorld;
+  /** Rupture draw (64); tests replace it. */
+  logisticsChance: (p: number) => boolean;
+  /** Rows dropped while loading the network (the service logs them). */
+  readonly loadWarnings: string[];
+  /** The stored structure rows could not be read: structure saves are skipped so they are never overwritten. */
+  structuresUnreadable = false;
+  readonly #telemetry = new Set<number>();
+  #telemetryAt = -Infinity;
+  #logisticsBlob: Record<string, unknown> | null = null;
   readonly #rng: Rng;
   #lastDebrisTickAt: number;
   /** Chunk payloads built while sizing a tick's loads, reused when they are sent. */
@@ -136,7 +166,7 @@ export class SweepersRoom {
   #gone: number[] = [];
   #nextId = 1;
 
-  constructor(channelId: string, startedBy: string | null, saved: RoomRecord | null, now: number) {
+  constructor(channelId: string, startedBy: string | null, saved: RoomRecord | null, now: number, structures: readonly WorldStructureRecord[] = []) {
     this.channelId = channelId;
     this.startedBy = startedBy;
     this.teamFunds = saved?.teamFunds ?? 0;
@@ -148,7 +178,7 @@ export class SweepersRoom {
     this.#unlocked = new Set(world.unlockedDistricts);
     this.#clock = new DayClock(world.clock, now);
     this.#weather = new WeatherScheduler(world.weather);
-    this.moveWorld = cityMoveWorld(this.#unlocked);
+    this.moveWorld = cityMoveWorld(this.#unlocked, () => this.logistics.colliders);
     const c0 = HEX_CELLS.map((cell) => {
       const stored = saved?.cleanliness[String(cell.id)];
       return stored === undefined ? initialCleanliness(cell) : clampCleanliness(stored);
@@ -158,6 +188,15 @@ export class SweepersRoom {
     this.debris = DebrisWorld.restore(world.debris, seed) ?? DebrisWorld.generate(channelId, c0, seed);
     this.#rng = new Rng(seed ^ 0x5bd1e995);
     this.#lastDebrisTickAt = now;
+    const logisticsRng = new Rng(hashString(`${channelId}:logistics:${now}`));
+    this.logisticsChance = (p) => logisticsRng.chance(p);
+    const layout = cityLayout();
+    this.logistics = new LogisticsWorld({ debris: this.debris, layout, unlocked: this.#unlocked, chance: (p) => this.logisticsChance(p) });
+    this.loadWarnings = [
+      ...loadStructures(this.logistics, { layout, ground: (x, z) => groundHeight(layout.heightfield, x, z), unlocked: this.#unlocked, layoutColliders: this.debris.grid.colliders }, structures, channelId),
+      ...restoreLogistics(this.logistics, world.logistics)
+    ];
+    this.debris.respawnFactor = (hex) => this.logistics.fenceFactor(hex);
   }
 
   get connectedCount(): number {
@@ -218,14 +257,19 @@ export class SweepersRoom {
     const player = this.#bySocket.get(socketId);
     if (!player) return undefined;
     this.#bySocket.delete(socketId);
+    this.#telemetry.delete(player.id);
     player.detach(now);
     if (this.#bySocket.size === 0) this.emptySince = now;
     return player;
   }
 
-  /** Removes a player for good; its id is reported in the next tick's `gone`. */
+  /** Removes a player for good (a carried bag drops at the last pose); its id is reported in the next tick's `gone`. */
   remove(player: SweepersPlayer, now: number): void {
     if (this.#players.get(player.id) !== player) return;
+    const carried = this.logistics.bags.get(player.carry);
+    if (carried?.st === 1) this.logistics.dropCarried(carried, player.pose);
+    player.carry = 0;
+    this.#telemetry.delete(player.id);
     this.#players.delete(player.id);
     this.#byKey.delete(player.key);
     if (player.socketId !== null) this.#bySocket.delete(player.socketId);
@@ -245,7 +289,7 @@ export class SweepersRoom {
     const p: PlayerTickRow[] = [];
     const acks: Record<string, number> = {};
     for (const player of this.#players.values()) {
-      if (player.dirty) p.push(encodePose(player.id, player.pose, player.corrected, player.personal.toolTier));
+      if (player.dirty) p.push(encodePose(player.id, player.pose, player.corrected, player.personal.toolTier, player.carry));
       if (player.lastSeq > player.ackedSeq) acks[String(player.id)] = player.lastSeq;
       player.dirty = false;
       player.corrected = false;
@@ -316,7 +360,8 @@ export class SweepersRoom {
       lifetimeEarned: this.lifetimeEarned,
       clock: this.#clock.state(now),
       weather: this.weather(now),
-      debris: { gen: DEBRIS_GEN, origin: GRID_ORIGIN, chunkM: CHUNK_M, cellM: CELL_M, n: CHUNKS_N, loadM: LOAD_RADIUS_M }
+      debris: { gen: DEBRIS_GEN, origin: GRID_ORIGIN, chunkM: CHUNK_M, cellM: CELL_M, n: CHUNKS_N, loadM: LOAD_RADIUS_M },
+      logistics: this.logistics.initPayload()
     };
   }
 
@@ -334,7 +379,8 @@ export class SweepersRoom {
       unlockedDistricts: this.unlockedDistricts(),
       clock: this.#clock.read(now),
       weather: this.#weather.record(),
-      debris: this.debris.record()
+      debris: this.debris.record(),
+      logistics: this.#logisticsRecord()
     });
     return { roomId: this.channelId, state, cleanliness, teamFunds: this.teamFunds, lastSaved: now };
   }
@@ -347,6 +393,7 @@ export class SweepersRoom {
 
   /** Applies `miskolc:sweep_hit` (C.4 checks 3–7; the room and rate checks are the caller's). */
   sweepHit(player: SweepersPlayer, hit: SweepHit, now: number): SweepAck {
+    if (player.carry !== 0) throw refuse('handsFull');
     const data = player.personal;
     if (hit.tool !== data.toolTier) throw refuse('notEquipped');
     if (hit.seq <= player.sweepSeq) throw tooFast();
@@ -364,24 +411,31 @@ export class SweepersRoom {
     return { ok: true, seq: hit.seq, kg: r3(result.kg), items: result.items, pushed: result.pushed };
   }
 
-  /** Applies `miskolc:player_action` (select, kick, dump). */
-  action(player: SweepersPlayer, action: PlayerAction, now: number): void {
+  /** Applies `miskolc:player_action` (select, kick, dump); a dump into a hopper returns the kg moved, else null. */
+  action(player: SweepersPlayer, action: PlayerAction, now: number): number | null {
     const data = player.personal;
     if (action.kind === 'select') {
       if (!ownsTool(data, action.tool)) throw refuse('notOwned');
-      if (action.tool === data.toolTier) return;
+      if (action.tool === data.toolTier) return null;
       this.#tipOrSpill(player);
       data.toolTier = action.tool;
       player.dirty = true;
       player.personalDirty = true;
-      return;
+      return null;
     }
     if (action.kind === 'dump') {
       if (isEmptyLoad(data.buf) && isEmptyLoad(data.pack)) throw refuse('emptyPack');
+      const hopper = this.logistics.hopperAt(player.pose.x, player.pose.z);
+      if (hopper !== null) {
+        const moved = this.logistics.fillHopper(hopper, data.buf) + this.logistics.fillHopper(hopper, data.pack);
+        if (moved <= 1e-6) throw refuse('hopperFull');
+        player.personalDirty = true;
+        return r3(moved);
+      }
       spill(this.debris, data.buf, player.pose.x, player.pose.z, player.pose.rotY);
       spill(this.debris, data.pack, player.pose.x, player.pose.z, player.pose.rotY);
       player.personalDirty = true;
-      return;
+      return null;
     }
     const item = this.debris.items.get(action.id);
     if (!item || item.kind !== KIND.can || (item.flags & FLAG_STUCK) !== 0) throw refuse('unknownItem');
@@ -390,6 +444,7 @@ export class SweepersRoom {
     const maxV = MAX_SPEED * SPEED_TOLERANCE * (effectActive(data, 'kofola', now) ? KOFOLA_SPEED : 1);
     if (Math.hypot(action.vx, action.vz) > maxV) throw tooFast();
     this.debris.kick(kickCan(this.debris, item, action.vx, action.vz, this.#unlocked));
+    return null;
   }
 
   /** Applies `miskolc:buy_upgrade`; returns the cash left. */
@@ -428,16 +483,180 @@ export class SweepersRoom {
   tickDebris(now: number): PlayerTickOutput[] {
     const dt = Math.min(MAX_TICK_STEP_MS, Math.max(0, now - this.#lastDebrisTickAt));
     this.#lastDebrisTickAt = now;
+    this.logistics.rebuildColliders();
+    this.logistics.tick(dt, now);
     this.debris.tickRespawn(dt);
+    const telemetry = this.#telemetryDue(now) ? this.logistics.telemetry() : null;
     for (const player of this.#players.values()) this.#tickPlayer(player, now, dt);
     const deltas = this.debris.takeDeltas();
     const out: PlayerTickOutput[] = [];
     for (const player of this.#players.values()) {
       if (player.socketId === null) continue;
       for (const chunkId of deltas.reload) player.interest.reload(chunkId);
-      out.push({ socketId: player.socketId, debris: this.#debrisFor(player, deltas, now), personal: this.#personalFor(player, now) });
+      out.push({
+        socketId: player.socketId, debris: this.#debrisFor(player, deltas, now), personal: this.#personalFor(player, now),
+        telemetry: telemetry && this.#telemetry.has(player.id) ? telemetry : null
+      });
     }
     return out;
+  }
+
+  // ---- Phase D: bags, building, logistics ----
+
+  /** Applies `miskolc:tie_bag` (D.4 checks 3–9; the room and rate checks are the caller's). */
+  tieBag(player: SweepersPlayer, tier: number, now: number): TieAck {
+    if (player.carry !== 0) throw refuse('handsFull');
+    if (now - player.lastTieAt < CADENCE_TOLERANCE * TIE_CADENCE_MS) throw tooFast();
+    const pose = player.pose;
+    if (!this.#unlocked.has(districtAt(pose.x, pose.z))) throw refuse('lockedDistrict');
+    const data = player.personal;
+    if (isEmptyLoad(data.buf) && isEmptyLoad(data.pack)) throw refuse('emptyPack');
+    const fill = tier === BIG_BAG ? this.logistics.bigBagNear(pose.x, pose.z) : null;
+    if (!fill && (data.bags[tier] ?? 0) < 1) throw refuse('noBags');
+    if (!fill && this.logistics.bagCount >= CAPS.bags) throw refuse('tooManyBags');
+    const spec = bagTier(tier);
+    // Dry run on copies: refused requests change nothing.
+    const copy = { ...data, buf: { ...data.buf, jackpots: [...data.buf.jackpots] }, pack: { ...data.pack, jackpots: [...data.pack.jackpots] } };
+    tipBuffer(copy);
+    const probe = fill ? { ...fill.load, jackpots: [...fill.load.jackpots] } : emptyLoad();
+    if (moveLoad(copy.pack, probe, spec.kg - loadKg(probe), spec.l - loadL(probe)) <= 1e-6) throw refuse('bagTooSmall');
+    tipBuffer(data);
+    const load = fill ? fill.load : emptyLoad();
+    const kg = moveLoad(data.pack, load, spec.kg - loadKg(load), spec.l - loadL(load));
+    let id: number;
+    if (fill) {
+      this.logistics.touchBag(fill);
+      id = fill.id;
+    } else {
+      const dir = { x: -Math.sin(pose.rotY), z: -Math.cos(pose.rotY) };
+      const at = this.debris.openToward(pose.x + dir.x * 0.6, pose.z + dir.z * 0.6, pose.x, pose.z, this.#unlocked) ?? { x: pose.x, z: pose.z };
+      const bag = this.logistics.newBag(tier, load, at.x, at.z, pose.rotY, dir.x, dir.z);
+      if (!bag) throw refuse('tooManyBags');
+      data.bags[tier] = (data.bags[tier] ?? 0) - 1;
+      id = bag.id;
+    }
+    player.lastTieAt = now;
+    player.personalDirty = true;
+    return { ok: true, id, tier, kg: Math.round(kg * 100) / 100 + 0 };
+  }
+
+  /** Applies `miskolc:place_structure` (D.3 rules 2–7); returns the new row for `structure_spawned`. */
+  placeStructure(player: SweepersPlayer, spec: PlaceSpec): StructRow {
+    const layout = cityLayout();
+    const base = checkPlacement({
+      layout,
+      ground: (x, z) => groundHeight(layout.heightfield, x, z),
+      unlocked: this.#unlocked,
+      layoutColliders: this.debris.grid.colliders,
+      structures: [...this.logistics.structures.values()],
+      groundBags: [...this.logistics.bags.values()].filter((b) => b.st === 0).map((b) => ({ x: b.x, z: b.z, r: bagTier(b.tier).r })),
+      players: [...this.#players.values()].map((p) => p.pose)
+    }, spec, player.pose);
+    const st = this.logistics.add(spec, base);
+    if (!st) throw new SweepersError(SWEEPERS_ERRORS.buildLimit.replace('{what}', CAP_NAMES.structures), { reason: 'buildLimit' });
+    return this.logistics.structRow(st);
+  }
+
+  /** Applies `miskolc:delete_structure` (D.3 rule 8); the removal goes out in the next `logistics_update`. */
+  deleteStructure(player: SweepersPlayer, id: number): void {
+    const st = this.logistics.structures.get(id);
+    if (!st) throw refuse('unknownStructure');
+    if (centreDistance(st, player.pose.x, player.pose.z) > PLACE_REACH_M) throw refuse('tooFar');
+    if (this.logistics.supportsStructures(st)) throw refuse('supportsStructures');
+    this.logistics.remove(id);
+  }
+
+  /** Applies `miskolc:logistics_action`; returns the ack. */
+  logisticsAction(player: SweepersPlayer, action: LogisticsAction, now: number): { ok: true } | ({ ok: true } & ThrowResult) | { ok: true; durMs: number } {
+    const pose = player.pose;
+    const world = this.logistics;
+    switch (action.kind) {
+      case 'pickup': {
+        if (player.carry !== 0) throw refuse('handsFull');
+        const bag = world.bags.get(action.id);
+        if (bag && bag.tier > 1) throw refuse('bigBagCrane');
+        const at = bag && ((bag.st === 0 && world.onTop(bag)) || bag.st === 3) ? world.bagPosition(bag) : null;
+        if (!bag || !at || Math.hypot(at.x - pose.x, at.z - pose.z) > PICKUP_REACH_M
+          || Math.abs(at.y - groundHeight(cityLayout().heightfield, pose.x, pose.z)) > PICKUP_HEIGHT_M) throw refuse('noBagNear');
+        world.pickUp(bag, player.id);
+        player.carry = bag.id;
+        player.dirty = true;
+        return { ok: true };
+      }
+      case 'throw': {
+        const bag = world.bags.get(player.carry);
+        if (player.carry === 0 || bag?.st !== 1) throw refuse('notCarrying');
+        const result = world.throwBag(bag, pose, action.power, action.pitch, action.rotY);
+        player.carry = 0;
+        player.dirty = true;
+        return { ok: true, ...result };
+      }
+      case 'clearJam': {
+        const st = world.structures.get(action.id);
+        if (!st || !world.isJammed(st.id)) throw refuse('notJammed');
+        if (player.personal.toolTier > 3) throw refuse('needBroom');
+        if (footprintDistance(st, pose.x, pose.z) > CLEAR_JAM_REACH_M) throw refuse('tooFar');
+        world.clearJam(st.id);
+        return { ok: true };
+      }
+      case 'crane': {
+        if (Math.hypot(pose.x - CRANE.console.x, pose.z - CRANE.console.z) > CRANE.consoleReachM) throw refuse('notAtCrane');
+        if (world.craneJob) throw refuse('craneBusy');
+        const bag = world.bags.get(action.bag);
+        if (!bag || bag.st !== 0 || !world.onTop(bag) || !inRect(CRANE.area, bag.x, bag.z)) throw refuse('notInCraneArea');
+        const target = CRANE.targets[action.to] ?? { x: 0, z: 0 };
+        for (const other of world.bags.values()) {
+          if (other.st === 0 && Math.hypot(other.x - target.x, other.z - target.z) <= CRANE.targetClearM) throw refuse('craneTargetBusy');
+        }
+        return { ok: true, durMs: world.startCrane(bag, action.to, now) };
+      }
+      case 'telemetry': {
+        if (!action.on) {
+          this.#telemetry.delete(player.id);
+          return { ok: true };
+        }
+        const office = cityLayout().landmarks.office;
+        if (Math.hypot(pose.x - office.x, pose.z - office.z) > TELEMETRY_ON_M) throw refuse('notAtTerminal');
+        this.#telemetry.add(player.id);
+        this.#telemetryAt = -Infinity;
+        return { ok: true };
+      }
+    }
+  }
+
+  /** The coalesced `logistics_update` of this tick, or null. */
+  takeLogisticsUpdate(now: number): LogisticsUpdate | null {
+    return this.logistics.takeUpdate(now);
+  }
+
+  /** The structure rows when they changed since the last call (persistence), else null. */
+  structureRecords(): WorldStructureRecord[] | null {
+    if (this.structuresUnreadable) return null;
+    return this.logistics.takeStructuresDirty() ? structureRecords(this.logistics, this.channelId) : null;
+  }
+
+  /** True once a second while anyone subscribes; subscribers further than 12 m from the office are dropped first. */
+  #telemetryDue(now: number): boolean {
+    const office = cityLayout().landmarks.office;
+    for (const id of [...this.#telemetry]) {
+      const p = this.#players.get(id);
+      if (!p || p.socketId === null || Math.hypot(p.pose.x - office.x, p.pose.z - office.z) > TELEMETRY_OFF_M) this.#telemetry.delete(id);
+    }
+    if (this.#telemetry.size === 0 || now - this.#telemetryAt < TELEMETRY_MS) return false;
+    this.#telemetryAt = now;
+    return true;
+  }
+
+  /** The v4 `logistics` blob, re-encoded only when the network changed or a bag is carried. */
+  #logisticsRecord(): Record<string, unknown> {
+    const carrying = [...this.#players.values()].some((p) => p.carry !== 0);
+    if (this.#logisticsBlob && !this.logistics.takeChanged() && !carrying) return this.#logisticsBlob;
+    const layout = cityLayout();
+    this.#logisticsBlob = encodeLogistics(this.logistics, (id) => {
+      const p = this.#players.get(id);
+      return p ? { x: p.pose.x, y: groundHeight(layout.heightfield, p.pose.x, p.pose.z), z: p.pose.z } : null;
+    });
+    return this.#logisticsBlob;
   }
 
   #tickPlayer(player: SweepersPlayer, now: number, dt: number): void {

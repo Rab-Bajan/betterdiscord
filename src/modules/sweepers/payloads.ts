@@ -1,10 +1,12 @@
-// Parsers for the untrusted client payloads of the sweepers events (Phases A–C).
+// Parsers for the untrusted client payloads of the sweepers events (Phases A–D).
 import { ValidationError } from '../../core/errors/ValidationError.ts';
 import { INVALID_PAYLOAD_MESSAGE, PayloadReader } from '../../core/validation/PayloadReader.ts';
 import { isPlainObject } from '../../core/validation/isPlainObject.ts';
-import { BUY_ITEMS } from './debris/shop.ts';
+import { BAG_QTY, BUY_ITEMS } from './debris/shop.ts';
 import type { BuyRequest } from './debris/shop.ts';
 import { TOOL_COUNT } from './debris/tables.ts';
+import { onLattice } from './logistics/placement.ts';
+import { BAG_TIERS, CRANE, STRUCT_TYPE_COUNT, structSpec, THROW_MAX_POWER } from './logistics/tables.ts';
 import { PLAYER_ANIM_STATES } from './types.ts';
 import type { PlayerAnimState } from './types.ts';
 
@@ -120,7 +122,7 @@ export function parsePlayerAction(payload: unknown): PlayerAction {
   return { channelId, kind };
 }
 
-/** Parses `{ channelId, item, tier?, level? }`: `tier` is required for tool (1..6) and repair (1..3), `level` for width, pack and hard. */
+/** Parses `{ channelId, item, tier?, level?, qty? }`: `tier` is required for tool (1..6), repair (1..3) and bag (0..2), `level` for width, pack and hard; bag `qty` is 1, 5 or 10 (default 1). */
 export function parseBuyUpgrade(payload: unknown): BuyRequest {
   const reader = PayloadReader.strict(payload);
   const channelId = reader.requireString('channelId', CHANNEL_ID);
@@ -128,5 +130,110 @@ export function parseBuyUpgrade(payload: unknown): BuyRequest {
   if (item === 'tool') return { channelId, item, tier: reader.requireInt('tier', { min: 1, max: 6 }) };
   if (item === 'repair') return { channelId, item, tier: reader.requireInt('tier', { min: 1, max: 3 }) };
   if (item === 'width' || item === 'pack' || item === 'hard') return { channelId, item, level: reader.requireInt('level', { min: 1, max: 10 }) };
+  if (item === 'bag') {
+    const qty = reader.has('qty') ? reader.requireEnum('qty', BAG_QTY) : 1;
+    return { channelId, item, tier: reader.requireInt('tier', { min: 0, max: BAG_TIERS.length - 1 }), qty };
+  }
   return { channelId, item };
+}
+
+// ---- Phase D ----
+
+/** `miskolc:tie_bag`. */
+export interface TieBag {
+  channelId: string;
+  tier: number;
+}
+
+/** `miskolc:place_structure` (x, z on the 0.5 m lattice, lvl valid for the type). */
+export interface PlaceStructure {
+  channelId: string;
+  type: number;
+  x: number;
+  z: number;
+  rot: number;
+  lvl: number;
+}
+
+/** `miskolc:delete_structure`. */
+export interface DeleteStructure {
+  channelId: string;
+  id: number;
+}
+
+/** `miskolc:logistics_action`. */
+export type LogisticsAction =
+  | { channelId: string; kind: 'pickup'; id: number }
+  | { channelId: string; kind: 'throw'; power: number; pitch: number; rotY: number }
+  | { channelId: string; kind: 'clearJam'; id: number }
+  | { channelId: string; kind: 'crane'; bag: number; to: number }
+  | { channelId: string; kind: 'telemetry'; on: boolean };
+
+export const LOGISTICS_ACTION_KINDS = Object.freeze(['pickup', 'throw', 'clearJam', 'crane', 'telemetry'] as const);
+const MAX_UINT16 = 0xffff;
+
+function inRange(payload: Record<string, unknown>, key: string, min: number, max: number): number {
+  const value = finite(payload, key);
+  if (value < min || value > max) {
+    throw new ValidationError(INVALID_PAYLOAD_MESSAGE, { field: key, reason: 'range', message: `"${key}" must be within ${min}..${max}.` });
+  }
+  return value;
+}
+
+/** The channel of a Phase D request, read first (the room and bucket checks come before the full guard). */
+export function parseChannel(payload: unknown): string {
+  return PayloadReader.strict(payload).requireString('channelId', CHANNEL_ID);
+}
+
+/** Parses `{ channelId, tier: 0..2 }`. */
+export function parseTieBag(payload: unknown): TieBag {
+  const reader = PayloadReader.strict(payload);
+  return { channelId: reader.requireString('channelId', CHANNEL_ID), tier: reader.requireInt('tier', { min: 0, max: BAG_TIERS.length - 1 }) };
+}
+
+/** Parses `{ channelId, type: 0..13, x, z, rot: 0..3, lvl: 0..2 }`: x and z on the 0.5 m lattice within ±256, lvl valid for the type. */
+export function parsePlaceStructure(payload: unknown): PlaceStructure {
+  const reader = PayloadReader.strict(payload);
+  const fields = isPlainObject(payload) ? payload : {};
+  const channelId = reader.requireString('channelId', CHANNEL_ID);
+  const type = reader.requireInt('type', { min: 0, max: STRUCT_TYPE_COUNT - 1 });
+  const x = finite(fields, 'x');
+  const z = finite(fields, 'z');
+  for (const [key, value] of [['x', x], ['z', z]] as const) {
+    if (!onLattice(value)) throw new ValidationError(INVALID_PAYLOAD_MESSAGE, { field: key, reason: 'snap', message: `"${key}" must be a multiple of 0.5 within ±256.` });
+  }
+  const rot = reader.requireInt('rot', { min: 0, max: 3 });
+  const spec = structSpec(type);
+  const lvl = reader.requireInt('lvl', { min: spec.lvlMin, max: spec.lvlMax });
+  return { channelId, type, x, z, rot, lvl };
+}
+
+/** Parses `{ channelId, id }` (0..65535; id 0, the landmark hopper, is refused by the rules). */
+export function parseDeleteStructure(payload: unknown): DeleteStructure {
+  const reader = PayloadReader.strict(payload);
+  return { channelId: reader.requireString('channelId', CHANNEL_ID), id: reader.requireInt('id', { min: 0, max: MAX_UINT16 }) };
+}
+
+/** Parses a `miskolc:logistics_action` (pickup, throw, clearJam, crane, telemetry). */
+export function parseLogisticsAction(payload: unknown): LogisticsAction {
+  const reader = PayloadReader.strict(payload);
+  const fields = isPlainObject(payload) ? payload : {};
+  const channelId = reader.requireString('channelId', CHANNEL_ID);
+  const kind = reader.requireEnum('kind', LOGISTICS_ACTION_KINDS);
+  switch (kind) {
+    case 'pickup':
+    case 'clearJam':
+      return { channelId, kind, id: reader.requireInt('id', { min: 0, max: MAX_UINT16 }) };
+    case 'throw':
+      return {
+        channelId, kind, power: inRange(fields, 'power', 0, THROW_MAX_POWER), pitch: inRange(fields, 'pitch', -0.6, 1.2), rotY: finite(fields, 'rotY')
+      };
+    case 'crane':
+      return { channelId, kind, bag: reader.requireInt('bag', { min: 0, max: MAX_UINT16 }), to: reader.requireInt('to', { min: 0, max: CRANE.targets.length - 1 }) };
+    case 'telemetry': {
+      const on = reader.optionalBoolean('on');
+      if (on === undefined) throw new ValidationError(INVALID_PAYLOAD_MESSAGE, { field: 'on', reason: 'missing', message: '"on" is required.' });
+      return { channelId, kind, on };
+    }
+  }
 }

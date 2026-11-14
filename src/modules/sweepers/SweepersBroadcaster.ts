@@ -2,9 +2,10 @@ import type { Server } from 'socket.io';
 import { SWEEPERS_EVENTS } from './types.ts';
 import type { ClockSync } from './dayClock.ts';
 import type { PersonalStatePayload } from './debris/personal.ts';
+import type { LogisticsTelemetry, LogisticsUpdate } from './logistics/LogisticsWorld.ts';
 import type {
-  DebrisChunkUpdate, DistrictUnlockedPayload, InitStatePayload, PlayerSnapshot, SweepersKickedPayload, SweepersSessionSummary,
-  SweepersSessionUpdate, TickSyncPayload
+  DebrisChunkUpdate, DistrictUnlockedPayload, InitStatePayload, PlayerSnapshot, StructureSpawnedPayload, SweepersKickedPayload,
+  SweepersSessionSummary, SweepersSessionUpdate, TickSyncPayload
 } from './types.ts';
 import type { WeatherPayload } from './weather.ts';
 
@@ -31,6 +32,12 @@ export interface SweepersEvents {
   debrisUpdate(socketId: string, payload: DebrisChunkUpdate): void;
   /** `miskolc:personal_update` to the owning socket. */
   personalUpdate(socketId: string, payload: PersonalStatePayload): void;
+  /** `miskolc:structure_spawned` to the world, at once on a place. */
+  structureSpawned(channelId: string, payload: StructureSpawnedPayload): void;
+  /** `miskolc:logistics_update` to the world, at most once per tick. */
+  logisticsUpdate(channelId: string, payload: LogisticsUpdate): void;
+  /** `miskolc:logistics_telemetry` to one subscribed socket (1 Hz). */
+  logisticsTelemetry(socketId: string, payload: LogisticsTelemetry): void;
 }
 
 /** {@link SweepersEvents} over socket.io. */
@@ -84,6 +91,18 @@ export class SweepersBroadcaster implements SweepersEvents {
 
   personalUpdate(socketId: string, payload: PersonalStatePayload): void {
     this.#io.to(socketId).emit(SWEEPERS_EVENTS.personalUpdate, payload);
+  }
+
+  structureSpawned(channelId: string, payload: StructureSpawnedPayload): void {
+    this.#io.to(sweepersRoomOf(channelId)).emit(SWEEPERS_EVENTS.structureSpawned, payload);
+  }
+
+  logisticsUpdate(channelId: string, payload: LogisticsUpdate): void {
+    this.#io.to(sweepersRoomOf(channelId)).emit(SWEEPERS_EVENTS.logisticsUpdate, payload);
+  }
+
+  logisticsTelemetry(socketId: string, payload: LogisticsTelemetry): void {
+    this.#io.to(socketId).emit(SWEEPERS_EVENTS.logisticsTelemetry, payload);
   }
 
   /** To the voice channel and the world's players (as phobia does), not the whole server. */

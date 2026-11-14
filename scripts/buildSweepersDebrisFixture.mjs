@@ -21,6 +21,7 @@ const rooms = new Map();
 const store = {
   loadRoom: (id) => rooms.get(id) ?? null,
   loadPlayerStats: () => null,
+  loadStructures: () => [],
   saveRoom: (room) => { rooms.set(room.roomId, room); },
   savePlayerStats: () => undefined
 };
@@ -38,7 +39,10 @@ const events = {
   clockTo: record('miskolc:clock'),
   weather: record('miskolc:weather'),
   debrisUpdate: record('miskolc:debris_chunk_update'),
-  personalUpdate: record('miskolc:personal_update')
+  personalUpdate: record('miskolc:personal_update'),
+  structureSpawned: () => undefined,
+  logisticsUpdate: () => undefined,
+  logisticsTelemetry: () => undefined
 };
 const service = new SweepersService({
   store, events, clock, scheduler: () => () => undefined, logger: new Logger({ minLevel: 'error', sink: () => undefined })

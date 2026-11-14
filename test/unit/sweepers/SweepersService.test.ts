@@ -27,7 +27,7 @@ test('join sends init_state (37 hexes, personal stats), announces the player and
   // Phase A fields keep their meaning; a new player has the one-time 2 000 Ft starter grant.
   const { cash, toolTier, backpackTier, totalKg } = init.personal;
   assert.deepEqual({ cash, toolTier, backpackTier, totalKg }, { cash: 2000, toolTier: 0, backpackTier: 0, totalKg: 0 });
-  assert.deepEqual(init.players, [{ id: 1, accountId: null, username: 'Alice', avatarColor: '#123456', ...spawnPose(1), tool: 0 }]);
+  assert.deepEqual(init.players, [{ id: 1, accountId: null, username: 'Alice', avatarColor: '#123456', ...spawnPose(1), tool: 0, carry: 0 }]);
   assert.deepEqual(events.of('playerJoined'), [[ROOM, init.players[0], 's1']]);
   assert.deepEqual(events.of('sessionUpdated'), [[ROOM, { active: true, startedBy: 'Alice', playerCount: 1 }]]);
   assert.equal(scheduler.active, 1);
@@ -56,7 +56,7 @@ test('tick_sync carries only changed players, acks of advanced seqs, and nothing
   assert.deepEqual(first.acks, { 1: 1 });
   assert.deepEqual(first.gone, []);
   assert.equal(first.p.length, 1);
-  assert.deepEqual(first.p[0], [1, Math.round((start.x + 0.5) * 100), 0, Math.round(start.z * 100), 32768, 2, 0, 0]);
+  assert.deepEqual(first.p[0], [1, Math.round((start.x + 0.5) * 100), 0, Math.round(start.z * 100), 32768, 2, 0, 0, 0]);
   service.tick();
   assert.equal(events.of('tickSync').length, 1, 'no tick when nothing changed');
   // A stale seq is ignored entirely.
@@ -261,6 +261,7 @@ test('a failing store is logged, the game keeps running', () => {
     store: {
       loadRoom: () => { throw new Error('disk'); },
       loadPlayerStats: () => null,
+      loadStructures: () => { throw new Error('disk'); },
       saveRoom: () => { throw new Error('disk'); },
       savePlayerStats: () => { throw new Error('disk'); }
     }
@@ -277,6 +278,7 @@ test('a failed stats read refuses the join and never pays the grant or overwrite
     store: {
       loadRoom: () => null,
       loadPlayerStats: () => { throw new Error('disk'); },
+      loadStructures: () => [],
       saveRoom: () => undefined,
       savePlayerStats: (row) => { saved.push(row.userId); }
     }

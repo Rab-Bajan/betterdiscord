@@ -49,6 +49,10 @@ export class SweepersPlayer {
   /** Stamina value and time of the last `personal_update`. */
   staminaSent = -1;
   staminaSentAt = -Infinity;
+  /** Carried bag id, 0 when none (Phase D); kept through the reconnect grace window. */
+  carry = 0;
+  /** Server time of the last accepted `tie_bag`. */
+  lastTieAt = -Infinity;
   /** Chunks the current socket knows. */
   interest: ChunkInterest;
   #budget: MotionBudget;
@@ -116,6 +120,6 @@ export class SweepersPlayer {
   }
 
   snapshot(): PlayerSnapshot {
-    return { id: this.id, accountId: this.accountId, username: this.username, avatarColor: this.avatarColor, ...this.pose, tool: this.personal.toolTier };
+    return { id: this.id, accountId: this.accountId, username: this.username, avatarColor: this.avatarColor, ...this.pose, tool: this.personal.toolTier, carry: this.carry };
   }
 }

@@ -138,6 +138,8 @@ export class DebrisWorld {
   #tickChunkCount = new Map<number, number>();
   #changed = true;
   #encoded: DebrisRecord | null = null;
+  /** Respawn multiplier per hex (Phase D fencing, 41); 1 by default. */
+  respawnFactor: (hex: number) => number = () => 1;
 
   private constructor(grid: DebrisGrid, cells: Uint8Array, next: number[], respawnInMs: number, seed: number) {
     this.grid = grid;
@@ -472,12 +474,12 @@ export class DebrisWorld {
     return this.#respawnInMs;
   }
 
-  /** Respawns one hex (C.2): +3..7 % of Mref (capped at Mref), 90 % into cells, 10 % into items, plus the jackpot roll. */
+  /** Respawns one hex (C.2): +3..7 % of Mref (capped at Mref, times the fence factor), 90 % into cells, 10 % into items, plus the jackpot roll. */
   respawnHex(hex: number): void {
     const m = this.#m[hex] ?? 0;
     const mref = this.#mref[hex] ?? 0;
     if (m <= 1e-9 || mref <= 0) return;
-    const add = Math.min(this.#rng.range(RESPAWN_SHARE[0], RESPAWN_SHARE[1]) * mref, mref - m);
+    const add = Math.min(this.#rng.range(RESPAWN_SHARE[0], RESPAWN_SHARE[1]) * mref, mref - m) * this.respawnFactor(hex);
     if (add <= 0) return;
     const district = districtOfHex(hex);
     const p = profileOf(district);
