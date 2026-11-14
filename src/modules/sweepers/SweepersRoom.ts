@@ -7,7 +7,7 @@ import type { DebrisDeltas } from './debris/DebrisWorld.ts';
 import { CELL_M, CHUNK_M, CHUNKS_N, GRID_ORIGIN } from './debris/grid.ts';
 import { effectActive, emptyLoad, isEmptyLoad, loadKg, loadL, ownsTool, personalPayload, serialisePersonal, v1Stats } from './debris/personal.ts';
 import type { PersonalData, PersonalStatePayload } from './debris/personal.ts';
-import { buy, isTeamItem, teamPurchase } from './debris/shop.ts';
+import { atWorkbench, buy, isTeamItem, teamPurchase } from './debris/shop.ts';
 import type { BuyRequest } from './debris/shop.ts';
 import { Economy, scaleAt } from './economy/Economy.ts';
 import type { InspectionPayload } from './economy/Economy.ts';
@@ -33,12 +33,16 @@ import {
 import { districtAt, HEX_CELLS, initialCleanliness } from './hexGrid.ts';
 import { MAX_SPEED, SPEED_TOLERANCE } from './motion.ts';
 import type { MoveWorld } from './motion.ts';
-import type { LogisticsAction, PlayerAction, SweepHit } from './payloads.ts';
+import type { LogisticsAction, PlayerAction, SweepHit, VehicleAction, VehicleDrive } from './payloads.ts';
 import { hashString, Rng } from './random.ts';
 import { refusal, SWEEPERS_ERRORS, SweepersError } from './SweepersError.ts';
 import { DISTRICT_IDS, unlockedFor } from './progression.ts';
 import { parseRoomState, serialiseRoomState } from './roomState.ts';
 import { WeatherScheduler } from './weather.ts';
+import { encodeVehicles, restoreVehicles } from './vehicles/persist.ts';
+import { vehicleType } from './vehicles/tables.ts';
+import { VehicleWorld } from './vehicles/VehicleWorld.ts';
+import type { VehicleAck, VehicleUpdate } from './vehicles/VehicleWorld.ts';
 import type { WeatherPayload } from './weather.ts';
 import { encodePose } from './quantize.ts';
 import { SweepersPlayer } from './SweepersPlayer.ts';
@@ -108,6 +112,9 @@ export interface TieAck {
   kg: number;
 }
 
+/** `player_action` result: a dump into a hopper or a vehicle bed reports the kg, otherwise null. */
+export type ActionResult = { hopperKg: number } | { bedKg: number } | null;
+
 /** Telemetry is sent this often to subscribers, ms. */
 export const TELEMETRY_MS = 1_000;
 
@@ -135,7 +142,7 @@ function cityMoveWorld(unlocked: ReadonlySet<number>, colliders: () => ColliderI
   return {
     ground: (x, z) => groundHeight(layout.heightfield, x, z),
     isOpen: (x, z) => unlocked.has(districtAt(x, z)),
-    sweep: (fromX, fromZ, toX, toZ) => sweepCircle(colliders(), fromX, fromZ, toX, toZ)
+    sweep: (fromX, fromZ, toX, toZ, radius) => sweepCircle(colliders(), fromX, fromZ, toX, toZ, radius)
   };
 }
 
@@ -170,8 +177,12 @@ export class SweepersRoom {
   readonly logistics: LogisticsWorld;
   /** Power grid, blueprints, inspector (Phase E). */
   readonly economy: Economy;
+  /** The vehicles (Phase F). */
+  readonly vehicles: VehicleWorld;
   /** Rupture draw (64); tests replace it. */
   logisticsChance: (p: number) => boolean;
+  /** Puncture draw (103); tests replace it. */
+  vehicleChance: (p: number) => boolean;
   /** Rows dropped while loading the network (the service logs them). */
   readonly loadWarnings: string[];
   /** The stored structure rows could not be read: structure saves are skipped so they are never overwritten. */
@@ -224,9 +235,17 @@ export class SweepersRoom {
       layout, ground: (x: number, z: number) => groundHeight(layout.heightfield, x, z), unlocked: this.#unlocked, layoutColliders: this.debris.grid.colliders,
       blueprints: this.economy.bp
     };
+    const vehicleRng = new Rng(hashString(`${channelId}:vehicles:${now}`));
+    this.vehicleChance = (p) => vehicleRng.chance(p);
+    this.vehicles = new VehicleWorld({
+      debris: this.debris, logistics: this.logistics, layout, moveWorld: this.moveWorld, unlocked: this.#unlocked, purse: this,
+      drizzle: () => this.#weather.kind === 'drizzle', chance: (p) => this.vehicleChance(p), credit: (d, kg) => this.economy.credit(d, kg),
+      player: (id) => this.#players.get(id)
+    });
     this.loadWarnings = [
       ...loadStructures(this.logistics, placement, structures, channelId),
-      ...restoreLogistics(this.logistics, world.logistics)
+      ...restoreLogistics(this.logistics, world.logistics),
+      ...restoreVehicles(this.vehicles, world.vehicles, now)
     ];
     this.debris.respawnFactor = (hex) => this.logistics.fenceFactor(hex);
   }
@@ -272,6 +291,7 @@ export class SweepersRoom {
       const displaced = existing.socketId !== null && existing.socketId !== socketId ? existing.socketId : null;
       if (existing.socketId !== null) this.#bySocket.delete(existing.socketId);
       existing.reattach(identity, socketId, now);
+      this.vehicles.reattached(existing);
       this.#bySocket.set(socketId, existing);
       return { player: existing, restored: true, displacedSocketId: displaced, replaced };
     }
@@ -290,6 +310,7 @@ export class SweepersRoom {
     if (!player) return undefined;
     this.#bySocket.delete(socketId);
     this.#telemetry.delete(player.id);
+    this.vehicles.detached(player);
     player.detach(now);
     if (this.#bySocket.size === 0) this.emptySince = now;
     return player;
@@ -301,6 +322,7 @@ export class SweepersRoom {
     const carried = this.logistics.bags.get(player.carry);
     if (carried?.st === 1) this.logistics.dropCarried(carried, player.pose);
     player.carry = 0;
+    this.vehicles.unseat(player);
     this.#telemetry.delete(player.id);
     this.#players.delete(player.id);
     this.#byKey.delete(player.key);
@@ -394,7 +416,8 @@ export class SweepersRoom {
       weather: this.weather(now),
       debris: { gen: DEBRIS_GEN, origin: GRID_ORIGIN, chunkM: CHUNK_M, cellM: CELL_M, n: CHUNKS_N, loadM: LOAD_RADIUS_M },
       logistics: this.logistics.initPayload(),
-      economy: this.economy.initPayload(this.teamFunds, now, this.connectedCount)
+      economy: this.economy.initPayload(this.teamFunds, now, this.connectedCount),
+      vehicles: this.vehicles.rows(now)
     };
   }
 
@@ -414,7 +437,8 @@ export class SweepersRoom {
       weather: this.#weather.record(),
       debris: this.debris.record(),
       logistics: this.#logisticsRecord(),
-      economy: this.economy.record()
+      economy: this.economy.record(),
+      vehicles: encodeVehicles(this.vehicles)
     });
     return { roomId: this.channelId, state, cleanliness, teamFunds: this.teamFunds, lastSaved: now };
   }
@@ -427,7 +451,8 @@ export class SweepersRoom {
 
   /** Applies `miskolc:sweep_hit` (C.4 checks 3–7; the room and rate checks are the caller's). */
   sweepHit(player: SweepersPlayer, hit: SweepHit, now: number): SweepAck {
-    if (player.carry !== 0) throw refuse('handsFull');
+    if (player.vehicle !== 0 && player.seat === 0) throw refuse('driving');
+    if (player.carry !== 0 || player.personal.jerry !== 0) throw refuse('handsFull');
     const data = player.personal;
     if (hit.tool !== data.toolTier) throw refuse('notEquipped');
     if (hit.seq <= player.sweepSeq) throw tooFast();
@@ -446,8 +471,8 @@ export class SweepersRoom {
     return { ok: true, seq: hit.seq, kg: r3(result.kg), items: result.items, pushed: result.pushed };
   }
 
-  /** Applies `miskolc:player_action` (select, kick, dump); a dump into a hopper returns the kg moved, else null. */
-  action(player: SweepersPlayer, action: PlayerAction, now: number): number | null {
+  /** Applies `miskolc:player_action` (select, kick, dump); a dump into a hopper returns the kg moved, into a vehicle bed its kg, else null. */
+  action(player: SweepersPlayer, action: PlayerAction, now: number): ActionResult {
     const data = player.personal;
     if (action.kind === 'select') {
       if (!ownsTool(data, action.tool)) throw refuse('notOwned');
@@ -465,7 +490,13 @@ export class SweepersRoom {
         const moved = this.logistics.fillHopper(hopper, data.buf) + this.logistics.fillHopper(hopper, data.pack);
         if (moved <= 1e-6) throw refuse('hopperFull');
         player.personalDirty = true;
-        return r3(moved);
+        return { hopperKg: r3(moved) };
+      }
+      const bed = this.vehicles.bedAt(player.pose.x, player.pose.z);
+      if (bed) {
+        const kg = this.vehicles.dumpInto(bed, data);
+        player.personalDirty = true;
+        return { bedKg: kg };
       }
       spill(this.debris, data.buf, player.pose.x, player.pose.z, player.pose.rotY);
       spill(this.debris, data.pack, player.pose.x, player.pose.z, player.pose.rotY);
@@ -485,7 +516,11 @@ export class SweepersRoom {
   /** Applies `miskolc:buy_upgrade` (personal items from cash, Phase E team items from the team funds); returns the balances. */
   buyUpgrade(player: SweepersPlayer, request: BuyRequest, now: number): BuyAck {
     const layout = cityLayout();
-    if (isTeamItem(request.item)) {
+    if (request.item === 'vehicle' || request.item === 'jerrycan') {
+      if (!atWorkbench(layout, player.pose.x, player.pose.z)) throw refuse('notAtWorkbench');
+      if (request.item === 'vehicle') this.vehicles.buy(request.tier ?? 0, now);
+      else this.vehicles.buyJerryCan(player, request.tier ?? 0);
+    } else if (isTeamItem(request.item)) {
       const grid = this.economy.grid;
       const purchase = teamPurchase(request, layout, player.pose.x, player.pose.z, {
         funds: this.teamFunds, bp: this.economy.bp, dieselL: grid.dieselL, unlocked: this.#unlocked
@@ -538,6 +573,7 @@ export class SweepersRoom {
     this.logistics.rebuildColliders();
     this.economy.grid.tick(dt, this.#clock.read(now).timeMs, () => this.#demandW());
     this.logistics.tick(dt, now, this.economy.grid.pf);
+    this.vehicles.tick(dt, now);
     const coins = this.logistics.takeCoins();
     for (const [, ft] of coins) {
       this.teamFunds += ft;
@@ -616,6 +652,7 @@ export class SweepersRoom {
       structures: [...this.logistics.structures.values()],
       blueprints: this.economy.bp,
       groundBags: [...this.logistics.bags.values()].filter((b) => b.st === 0).map((b) => ({ x: b.x, z: b.z, r: bagTier(b.tier).r })),
+      vehicles: this.vehicles.bodyCircles(),
       players: [...this.#players.values()].map((p) => p.pose)
     }, spec, player.pose);
     const st = this.logistics.add(spec, base);
@@ -638,7 +675,7 @@ export class SweepersRoom {
     const world = this.logistics;
     switch (action.kind) {
       case 'pickup': {
-        if (player.carry !== 0) throw refuse('handsFull');
+        if (player.carry !== 0 || player.personal.jerry !== 0) throw refuse('handsFull');
         const bag = world.bags.get(action.id);
         if (bag && !bagTier(bag.tier).carry) throw refuse('bigBagCrane');
         const at = bag && ((bag.st === 0 && world.onTop(bag)) || bag.st === 3) ? world.bagPosition(bag) : null;
@@ -709,6 +746,28 @@ export class SweepersRoom {
     }
   }
 
+  // ---- Phase F: vehicles ----
+
+  /** `miskolc:vehicle_enter` (F.4 checks after the guard); returns the seat. */
+  vehicleEnter(player: SweepersPlayer, id: number, seat: number, now: number): number {
+    return this.vehicles.enter(player, id, seat, now);
+  }
+
+  /** `miskolc:vehicle_drive` from the driver; the result goes out with the next tick. */
+  vehicleDrive(player: SweepersPlayer, drive: VehicleDrive, now: number): void {
+    this.vehicles.drive(player, drive.seq, drive, now);
+  }
+
+  /** `miskolc:vehicle_action`; returns the ack. */
+  vehicleAction(player: SweepersPlayer, action: VehicleAction, now: number): VehicleAck {
+    return this.vehicles.action(player, action, now);
+  }
+
+  /** The coalesced `vehicle_update` of this tick, or null. */
+  takeVehicleUpdate(now: number): VehicleUpdate | null {
+    return this.vehicles.takeUpdate(now);
+  }
+
   // ---- Phase E: scales, payout, power, inspector ----
 
   /** Districts opened inside the room since the last call (the service announces and saves them). */
@@ -765,7 +824,7 @@ export class SweepersRoom {
   #weighScales(now: number): void {
     const layout = cityLayout();
     for (const player of this.#players.values()) {
-      if (player.socketId === null || player.scale < 0 || player.scaleDone || now - player.scaleSince < SCALE_STILL_MS) continue;
+      if (player.socketId === null || player.vehicle !== 0 || player.scale < 0 || player.scaleDone || now - player.scaleSince < SCALE_STILL_MS) continue;
       const scale = player.scale === 0 ? 0 : 1;
       const data = player.personal;
       const containers: Container[] = [];
@@ -781,8 +840,6 @@ export class SweepersRoom {
       for (const bag of ground) containers.push({ load: bag.load, proc: bagTier(bag.tier).proc });
       if (containers.length === 0) continue;
       player.scaleDone = true;
-      const epoch = lmeEpoch(now);
-      const bill = receipt(containers, lmeRow(epoch).pct);
       data.buf = emptyLoad();
       data.pack = emptyLoad();
       player.personalDirty = true;
@@ -793,19 +850,40 @@ export class SweepersRoom {
         player.dirty = true;
       }
       for (const bag of ground) this.logistics.takeBag(bag);
-      const paid = [...this.#players.values()].filter((p) => p.socketId !== null);
-      const { each, team } = split(bill.total, paid.length);
-      for (const p of paid) {
-        if (each <= 0) continue;
-        p.personal.cash += each;
-        p.personalDirty = true;
-      }
-      this.teamFunds += team;
-      if (bill.total > 0) this.#revenue(bill.total);
-      this.#weighings.push({
-        scale, by: player.id, kgDg: bill.kgDg, lines: bill.lines, dirtyFt: bill.dirtyFt, total: bill.total, team, each, to: paid.map((p) => p.id), epoch
-      });
+      this.#payReceipt(scale, player.id, containers, now);
     }
+    // Vehicles (F.2): a connected driver, the centre on the weighbridge, still 2 s, a loaded bed.
+    for (const v of this.vehicles.vehicles.values()) {
+      const driver = this.#players.get(v.seats[0] ?? 0);
+      if (!driver?.connected || v.scale !== 0 || v.scaleDone || now - v.scaleSince < SCALE_STILL_MS) continue;
+      const containers: Container[] = [];
+      if (!isEmptyLoad(v.load)) containers.push({ load: v.load, proc: 0 });
+      for (const bag of v.bags) containers.push({ load: bag.load, proc: bagTier(bag.tier).proc });
+      if (containers.length === 0) continue;
+      v.scaleDone = true;
+      this.vehicles.emptyBed(v);
+      this.#payReceipt(0, driver.id, containers, now, { id: v.id, type: v.type, tareKg: vehicleType(v.type).tareKg });
+    }
+  }
+
+  /** Pays a weighing's receipt (E.2): 80/20 split over the connected players, revenue, the `scale_weighed` record. */
+  #payReceipt(scale: 0 | 1, by: number, containers: Container[], now: number, veh?: ScaleWeighedPayload['veh']): void {
+    const epoch = lmeEpoch(now);
+    const bill = receipt(containers, lmeRow(epoch).pct);
+    const paid = [...this.#players.values()].filter((p) => p.socketId !== null);
+    const { each, team } = split(bill.total, paid.length);
+    for (const p of paid) {
+      if (each <= 0) continue;
+      p.personal.cash += each;
+      p.personalDirty = true;
+    }
+    this.teamFunds += team;
+    if (bill.total > 0) this.#revenue(bill.total);
+    const weighed: ScaleWeighedPayload = {
+      scale, by, kgDg: bill.kgDg, lines: bill.lines, dirtyFt: bill.dirtyFt, total: bill.total, team, each, to: paid.map((p) => p.id), epoch
+    };
+    if (veh) weighed.veh = veh;
+    this.#weighings.push(weighed);
   }
 
   /** The coalesced `logistics_update` of this tick, or null. */

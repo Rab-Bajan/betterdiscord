@@ -54,6 +54,8 @@ export interface PersonalData extends PersonalStats {
   starterBags: boolean;
   /** Zsírzóprés owned (Phase E, 89). */
   greaseGun: boolean;
+  /** Held jerry can (Phase F): 0 none, 1 benzin, 2 dízel. Transient: kept through the grace window, never stored. */
+  jerry: 0 | 1 | 2;
 }
 
 /** `miskolc:personal_update` and `init_state.personal`. */
@@ -74,6 +76,8 @@ export interface PersonalStatePayload extends PersonalStats {
   bags: [number, number, number];
   /** Zsírzóprés owned (Phase E). */
   greaseGun: boolean;
+  /** Held jerry can (Phase F): 0 none, 1 benzin, 2 dízel. */
+  jerry: 0 | 1 | 2;
 }
 
 export const EFFECT_NAMES: readonly EffectName[] = Object.freeze(['stench', 'beer', 'kofola']);
@@ -149,7 +153,8 @@ export function personalPayload(data: PersonalData, now: number): PersonalStateP
     caps: { bufKg: bufferCap(data), packKg: packCapKg(data), packL: packCapL(data) },
     fx,
     bags: [...data.bags],
-    greaseGun: data.greaseGun
+    greaseGun: data.greaseGun,
+    jerry: data.jerry
   };
 }
 
@@ -224,7 +229,8 @@ export function parsePersonal(stats: PersonalStats, extra: Record<string, unknow
     fx,
     bags: [bagStock(0), bagStock(1), bagStock(2)],
     starterBags: json['starterBags'] === true,
-    greaseGun: json['greaseGun'] === true
+    greaseGun: json['greaseGun'] === true,
+    jerry: 0
   };
   let granted = false;
   if (!data.starter) {

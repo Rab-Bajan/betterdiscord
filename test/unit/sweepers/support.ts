@@ -82,6 +82,7 @@ export class RecordingEvents implements SweepersEvents {
   scaleWeighed(...args: Parameters<SweepersEvents['scaleWeighed']>): void { this.log.push(['scaleWeighed', ...args]); }
   inspection(...args: Parameters<SweepersEvents['inspection']>): void { this.log.push(['inspection', ...args]); }
   economy(...args: Parameters<SweepersEvents['economy']>): void { this.log.push(['economy', ...args]); }
+  vehicleUpdate(...args: Parameters<SweepersEvents['vehicleUpdate']>): void { this.log.push(['vehicleUpdate', ...args]); }
 
   /** Recorded calls of `name`, removing nothing. */
   of(name: string): unknown[][] {

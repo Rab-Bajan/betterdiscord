@@ -60,7 +60,8 @@ const events = {
   logisticsTelemetry: record('miskolc:logistics_telemetry'),
   scaleWeighed: record('miskolc:scale_weighed'),
   inspection: record('miskolc:inspection'),
-  economy: record('miskolc:economy')
+  economy: record('miskolc:economy'),
+  vehicleUpdate: () => undefined
 };
 const service = new SweepersService({
   store, events, clock, scheduler: () => () => undefined, logger: new Logger({ minLevel: 'error', sink: () => undefined })

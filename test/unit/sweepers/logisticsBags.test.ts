@@ -204,7 +204,7 @@ test('dump into the hopper zone moves buffer + pack (hopperFull when nothing mov
   const w = world();
   w.at(14, 9);
   w.player.personal.pack = load({ dust: 12 });
-  assert.equal(w.service.playerAction('s1', { channelId: ROOM, kind: 'dump' }), 12);
+  assert.deepEqual(w.service.playerAction('s1', { channelId: ROOM, kind: 'dump' }), { hopperKg: 12 });
   assert.ok(Math.abs(loadKg(w.logistics.bufferOf(0) ?? load({})) - 12) < 1e-9);
   w.logistics.fillHopper(0, load({ dust: 3_000 }));
   w.player.personal.pack = load({ dust: 1 });

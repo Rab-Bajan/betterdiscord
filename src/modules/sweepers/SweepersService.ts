@@ -4,11 +4,12 @@ import { SWEEPERS_ERRORS, SweepersError } from './SweepersError.ts';
 import type { PlayerIdentity, SweepersPlayer } from './SweepersPlayer.ts';
 import type { SweepersStore } from './SweepersRepository.ts';
 import { NEW_PLAYER_STATS, SweepersRoom } from './SweepersRoom.ts';
-import type { BuyAck, LogisticsAck, SweepAck, TieAck } from './SweepersRoom.ts';
+import type { ActionResult, BuyAck, LogisticsAck, SweepAck, TieAck } from './SweepersRoom.ts';
+import type { VehicleAck } from './vehicles/VehicleWorld.ts';
 import { parsePersonal } from './debris/personal.ts';
 import type { PersonalData } from './debris/personal.ts';
 import type { BuyRequest } from './debris/shop.ts';
-import type { LogisticsAction, PlaceStructure, PlayerAction, PlayerInput, SweepHit } from './payloads.ts';
+import type { LogisticsAction, PlaceStructure, PlayerAction, PlayerInput, SweepHit, VehicleAction, VehicleDrive, VehicleEnter } from './payloads.ts';
 import type { SweepersSessionSummary } from './types.ts';
 
 /** Server time source (ms). */
@@ -171,6 +172,11 @@ export class SweepersService {
     const { room, player } = this.#playerOf(socketId, input.channelId);
     const { channelId: _channelId, seq, ...pose } = input;
     const now = this.#clock.now();
+    // Seated (Phase F): only seq, heading and a passenger's state; the pose follows the seat.
+    if (player.vehicle !== 0) {
+      room.vehicles.seatedInput(player, seq, pose.rotY, pose.state);
+      return;
+    }
     if (player.applyInput(seq, pose, now, room.moveWorld, room.speedFactor(player, now))) room.afterInput(player, now);
   }
 
@@ -180,8 +186,8 @@ export class SweepersService {
     return room.sweepHit(player, hit, this.#clock.now());
   }
 
-  /** `miskolc:player_action`: select a tool, kick a can, dump the pack; a dump into a hopper returns the kg moved. */
-  playerAction(socketId: string, action: PlayerAction): number | null {
+  /** `miskolc:player_action`: select a tool, kick a can, dump the pack; a dump into a hopper or a vehicle bed returns its kg. */
+  playerAction(socketId: string, action: PlayerAction): ActionResult {
     const { room, player } = this.#playerOf(socketId, action.channelId);
     return room.action(player, action, this.#clock.now());
   }
@@ -220,6 +226,24 @@ export class SweepersService {
     return balances;
   }
 
+  /** `miskolc:vehicle_enter`; returns the seat. */
+  vehicleEnter(socketId: string, request: VehicleEnter): number {
+    const { room, player } = this.#playerOf(socketId, request.channelId);
+    return room.vehicleEnter(player, request.id, request.seat, this.#clock.now());
+  }
+
+  /** `miskolc:vehicle_drive`; corrections go out as the row's corr flag. */
+  vehicleDrive(socketId: string, drive: VehicleDrive): void {
+    const { room, player } = this.#playerOf(socketId, drive.channelId);
+    room.vehicleDrive(player, drive, this.#clock.now());
+  }
+
+  /** `miskolc:vehicle_action`; returns the ack. */
+  vehicleAction(socketId: string, action: VehicleAction): VehicleAck {
+    const { room, player } = this.#playerOf(socketId, action.channelId);
+    return room.vehicleAction(player, action, this.#clock.now());
+  }
+
   /** Throws `notInRoom` unless the socket plays in the channel's world. */
   assertInRoom(socketId: string, channelId: string): void {
     this.#playerOf(socketId, channelId);
@@ -249,6 +273,8 @@ export class SweepersService {
       }
       const logistics = room.takeLogisticsUpdate(now);
       if (logistics) this.#events.logisticsUpdate(room.channelId, logistics);
+      const vehicles = room.takeVehicleUpdate(now);
+      if (vehicles) this.#events.vehicleUpdate(room.channelId, vehicles);
       for (const weighed of room.takeWeighings()) this.#events.scaleWeighed(room.channelId, weighed);
       const inspection = room.takeInspection();
       if (inspection) this.#events.inspection(room.channelId, inspection);

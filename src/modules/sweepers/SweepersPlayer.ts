@@ -1,7 +1,7 @@
 import { ChunkInterest } from './debris/ChunkInterest.ts';
 import { debrisGrid } from './debris/grid.ts';
 import type { PersonalData } from './debris/personal.ts';
-import { fullBudget, validateMove } from './motion.ts';
+import { fullBudget, normaliseAngle, validateMove } from './motion.ts';
 import type { MotionBudget, MoveWorld } from './motion.ts';
 import type { PlayerSnapshot, Pose } from './types.ts';
 
@@ -58,6 +58,9 @@ export class SweepersPlayer {
   scaleAnchor = { x: 0, z: 0 };
   scaleSince = 0;
   scaleDone = false;
+  /** Seated vehicle id (Phase F), 0 on foot; kept through the reconnect grace window. */
+  vehicle = 0;
+  seat = 0;
   /** Chunks the current socket knows. */
   interest: ChunkInterest;
   #budget: MotionBudget;
@@ -122,6 +125,21 @@ export class SweepersPlayer {
       this.dirty = true;
     }
     return true;
+  }
+
+  /** A seated `player_input` (F.2): only the seq, the heading and (for a passenger) the state are taken. */
+  applySeatedInput(seq: number, rotY: number, state: Pose['state'] | null): boolean {
+    if (seq <= this.lastSeq) return false;
+    this.lastSeq = seq;
+    const next = { ...this.pose, rotY: normaliseAngle(rotY), state: state ?? this.pose.state };
+    if (next.rotY !== this.pose.rotY || next.state !== this.pose.state) this.dirty = true;
+    this.pose = next;
+    return true;
+  }
+
+  /** A fresh movement budget (getting out of a vehicle). */
+  resetBudget(now: number): void {
+    this.#budget = fullBudget(now);
   }
 
   snapshot(): PlayerSnapshot {

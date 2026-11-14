@@ -75,7 +75,7 @@ export interface PortSpec {
 }
 
 export type StructFamily =
-  | 'found' | 'belt' | 'bendL' | 'bendR' | 'ramp' | 'splitter' | 'merger' | 'hopper' | 'packager' | 'fence' | 'stripper' | 'baler' | 'magnet' | 'trommel';
+  | 'found' | 'belt' | 'bendL' | 'bendR' | 'ramp' | 'splitter' | 'merger' | 'hopper' | 'packager' | 'fence' | 'stripper' | 'baler' | 'magnet' | 'trommel' | 'garage';
 
 /** Collider rule of a type: foundation (top − ground), deck (highest deck − base), fixed height, or none. */
 export type ColliderRule = { kind: 'found' } | { kind: 'deck' } | { kind: 'fixed'; h: number } | { kind: 'none' };
@@ -154,12 +154,14 @@ export const STRUCT_TYPES: readonly StructSpec[] = Object.freeze([
   {
     key: 'trommel', name: 'Forgódobos salakrostáló', family: 'trommel', w: 2, d: 4, lvlMin: 0, lvlMax: 0,
     ins: [port(0, 2, 0, -1)], outs: [port(0, -2, 0, -1), port(1, 0, 1, 0)], len: 4, collider: { kind: 'fixed', h: 2.2 }
-  }
+  },
+  // Phase F (105): a drive-in pad; the roof and posts are visual only.
+  { key: 'garage', name: 'Garázsállás', family: 'garage', w: 4, d: 8, lvlMin: 0, lvlMax: 0, ins: [], outs: [], len: 0, collider: { kind: 'none' } }
 ]);
 
 export const TYPE = Object.freeze({
   found2: 0, found4: 1, belt1: 2, belt2: 3, belt5: 4, bendL: 5, bendR: 6, rampUp: 7, rampDown: 8, splitter: 9, merger: 10, hopper: 11, packager: 12, fence: 13,
-  stripper: 14, baler: 15, magnet: 16, trommel: 17
+  stripper: 14, baler: 15, magnet: 16, trommel: 17, garage: 18
 } as const);
 export const STRUCT_TYPE_COUNT = STRUCT_TYPES.length;
 export const structSpec = (type: number): StructSpec => STRUCT_TYPES[type] ?? STRUCT_TYPES[0] ?? beltType('', '', 1);
@@ -280,12 +282,12 @@ export const CRANE = Object.freeze({
 
 /** Room caps (lead default). */
 export const CAPS = Object.freeze({
-  structures: 256, foundations: 96, beltM: 300, junctions: 24, hoppers: 4, packagers: 4, fences: 64, bags: 300, lots: 150, machines: 8
+  structures: 256, foundations: 96, beltM: 300, junctions: 24, hoppers: 4, packagers: 4, fences: 64, bags: 300, lots: 150, machines: 8, garages: 6
 });
 /** `{what}` of the `buildLimit` refusal. */
 export const CAP_NAMES = Object.freeze({
   structures: 'épületelem', foundations: 'betonalap', beltM: 'szalaghossz', junctions: 'elágazás/idom', hoppers: 'garat', packagers: 'zsákoló', fences: 'kerítés',
-  machines: 'gép'
+  machines: 'gép', garages: 'garázs'
 });
 
 /** Bag handling (61, 62, 64). */

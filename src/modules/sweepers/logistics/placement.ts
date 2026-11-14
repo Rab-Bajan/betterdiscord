@@ -31,6 +31,8 @@ export interface PlacementWorld {
   layoutColliders: ColliderIndex;
   structures: readonly Structure[];
   groundBags: ReadonlyArray<{ x: number; z: number; r: number }>;
+  /** Vehicle body circles and spawn slots (Phase F); absent on a persistence reload. */
+  vehicles?: ReadonlyArray<{ x: number; z: number; r: number }>;
   players: ReadonlyArray<{ x: number; z: number }>;
   /** Bought machine blueprints (bit = type − 14, Phase E rule 5b). */
   blueprints: number;
@@ -74,6 +76,7 @@ export function exceededCap(structures: Iterable<Structure>, type: number): stri
   let packagers = 0;
   let fences = 0;
   let machines = 0;
+  let garages = 0;
   for (const s of structures) {
     total++;
     if (isFoundation(s.type)) found++;
@@ -83,6 +86,7 @@ export function exceededCap(structures: Iterable<Structure>, type: number): stri
     if (s.type === TYPE.packager) packagers++;
     if (s.type === TYPE.fence) fences++;
     if (isMachine(s.type)) machines++;
+    if (s.type === TYPE.garage) garages++;
   }
   if (total + 1 > CAPS.structures) return CAP_NAMES.structures;
   if (isFoundation(type) && found + 1 > CAPS.foundations) return CAP_NAMES.foundations;
@@ -92,6 +96,7 @@ export function exceededCap(structures: Iterable<Structure>, type: number): stri
   if (type === TYPE.packager && packagers + 1 > CAPS.packagers) return CAP_NAMES.packagers;
   if (type === TYPE.fence && fences + 1 > CAPS.fences) return CAP_NAMES.fences;
   if (isMachine(type) && machines + 1 > CAPS.machines) return CAP_NAMES.machines;
+  if (type === TYPE.garage && garages + 1 > CAPS.garages) return CAP_NAMES.garages;
   return null;
 }
 
@@ -140,6 +145,7 @@ export function checkPlacement(world: PlacementWorld, spec: PlaceSpec, pose: { x
     if (foundation || !isFoundation(other.type)) throw refusal('blocked');
   }
   for (const bag of world.groundBags) if (rectHitsCircle(inner, bag.x, bag.z, bag.r)) throw refusal('blocked');
+  for (const body of world.vehicles ?? []) if (rectHitsCircle(inner, body.x, body.z, body.r)) throw refusal('blocked');
   const groundC = world.ground(spec.x, spec.z);
   if (blocksPlayers(spec.type, spec.lvl, base ?? groundC, groundC)) {
     for (const p of world.players) if (rectHitsCircle(inner, p.x, p.z, PLAYER_R)) throw refusal('blocked');

@@ -54,7 +54,7 @@ export function normaliseAngle(rad: number): number {
 const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value));
 
 /** True when every point of the straight path (sampled every OPEN_CHECK_STEP, ends included) is open. */
-function pathOpen(world: MoveWorld, fromX: number, fromZ: number, toX: number, toZ: number): boolean {
+export function pathOpen(world: MoveWorld, fromX: number, fromZ: number, toX: number, toZ: number): boolean {
   const steps = Math.max(1, Math.ceil(Math.hypot(toX - fromX, toZ - fromZ) / OPEN_CHECK_STEP));
   for (let i = 1; i <= steps; i++) {
     const t = i / steps;
@@ -69,8 +69,8 @@ export interface MoveWorld {
   ground(x: number, z: number): number;
   /** False where the player may not be (a locked district). */
   isOpen(x: number, z: number): boolean;
-  /** Walks the player circle from one point towards another; `hit` when a collider stopped or deflected it. */
-  sweep(fromX: number, fromZ: number, toX: number, toZ: number): { x: number; z: number; hit: boolean };
+  /** Walks the player circle (or one of `radius`, a vehicle body) from one point towards another; `hit` when a collider stopped or deflected it. */
+  sweep(fromX: number, fromZ: number, toX: number, toZ: number, radius?: number): { x: number; z: number; hit: boolean };
 }
 
 /** Result of validating one input. */

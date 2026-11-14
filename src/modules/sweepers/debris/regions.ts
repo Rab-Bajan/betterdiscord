@@ -9,7 +9,7 @@ export const ARC_AREA_FACTOR = 1.396;
 export const CONE_AREA_FACTOR = 0.2618;
 
 export interface Region {
-  kind: 'arc' | 'cone' | 'sector';
+  kind: 'arc' | 'cone' | 'sector' | 'rect';
   ox: number;
   oz: number;
   rotY: number;
@@ -43,10 +43,19 @@ export const coneRegion = (ox: number, oz: number, rotY: number, reach: number, 
 export const sectorRegion = (ox: number, oz: number, rotY: number, reach: number): Region =>
   ({ kind: 'sector', ox, oz, rotY, reach, width: 0, halfAngle: ARC_HALF_ANGLE, minD: 0 });
 
+/** A vehicle brush (Phase F): local |u| ≤ width/2 across, 0 ≤ v ≤ len along `rotY` from (ox, oz). */
+export const rectRegion = (ox: number, oz: number, rotY: number, len: number, width: number): Region =>
+  ({ kind: 'rect', ox, oz, rotY, reach: len, width, halfAngle: 0, minD: 0 });
+
 /** True when point (x, z) is inside the region. */
 export function inRegion(region: Region, x: number, z: number): boolean {
   const dx = x - region.ox;
   const dz = z - region.oz;
+  if (region.kind === 'rect') {
+    const dir = dirOf(region.rotY);
+    const v = dx * dir.x + dz * dir.z;
+    return v >= 0 && v <= region.reach && Math.abs(dx * dir.z - dz * dir.x) <= region.width / 2;
+  }
   const d = Math.hypot(dx, dz);
   if (region.kind === 'arc') {
     if (Math.abs(d - region.reach) > region.width / 2) return false;
@@ -61,6 +70,7 @@ export function inRegion(region: Region, x: number, z: number): boolean {
 export function regionArea(region: Region): number {
   if (region.kind === 'arc') return ARC_AREA_FACTOR * region.reach * region.width;
   if (region.kind === 'cone') return CONE_AREA_FACTOR * (region.reach * region.reach - region.minD * region.minD);
+  if (region.kind === 'rect') return region.reach * region.width;
   return region.halfAngle * region.reach * region.reach;
 }
 

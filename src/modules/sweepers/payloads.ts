@@ -1,4 +1,4 @@
-// Parsers for the untrusted client payloads of the sweepers events (Phases A–E).
+// Parsers for the untrusted client payloads of the sweepers events (Phases A–F).
 import { ValidationError } from '../../core/errors/ValidationError.ts';
 import { INVALID_PAYLOAD_MESSAGE, PayloadReader } from '../../core/validation/PayloadReader.ts';
 import { isPlainObject } from '../../core/validation/isPlainObject.ts';
@@ -8,6 +8,7 @@ import { TOOL_COUNT } from './debris/tables.ts';
 import { onLattice } from './logistics/placement.ts';
 import { CRANE, MACHINES, STOCK_TIERS, STRUCT_TYPE_COUNT, structSpec, THROW_MAX_POWER } from './logistics/tables.ts';
 import { PLAYER_ANIM_STATES } from './types.ts';
+import { MAX_SEATS, VEHICLE_TYPE_COUNT } from './vehicles/tables.ts';
 import type { PlayerAnimState } from './types.ts';
 
 const CHANNEL_ID = { trim: true, maxLength: 64 } as const;
@@ -124,7 +125,7 @@ export function parsePlayerAction(payload: unknown): PlayerAction {
 
 /**
  * Parses `{ channelId, item, tier?, level?, qty? }`: `tier` is required for tool (1..6), repair (1..3), bag (0..2),
- * blueprint (0..3) and license (1..5), `level` for width, pack and hard; bag `qty` is 1, 5 or 10 (default 1).
+ * blueprint (0..3), license (1..5), vehicle (0..5) and jerrycan (0..1), `level` for width, pack and hard; bag `qty` is 1, 5 or 10 (default 1).
  */
 export function parseBuyUpgrade(payload: unknown): BuyRequest {
   const reader = PayloadReader.strict(payload);
@@ -139,6 +140,8 @@ export function parseBuyUpgrade(payload: unknown): BuyRequest {
   }
   if (item === 'blueprint') return { channelId, item, tier: reader.requireInt('tier', { min: 0, max: MACHINES.length - 1 }) };
   if (item === 'license') return { channelId, item, tier: reader.requireInt('tier', { min: 1, max: 5 }) };
+  if (item === 'vehicle') return { channelId, item, tier: reader.requireInt('tier', { min: 0, max: VEHICLE_TYPE_COUNT - 1 }) };
+  if (item === 'jerrycan') return { channelId, item, tier: reader.requireInt('tier', { min: 0, max: 1 }) };
   return { channelId, item };
 }
 
@@ -198,7 +201,7 @@ export function parseTieBag(payload: unknown): TieBag {
   return { channelId: reader.requireString('channelId', CHANNEL_ID), tier: reader.requireInt('tier', { min: 0, max: STOCK_TIERS - 1 }) };
 }
 
-/** Parses `{ channelId, type: 0..17, x, z, rot: 0..3, lvl: 0..2 }`: x and z on the 0.5 m lattice within ±256, lvl valid for the type. */
+/** Parses `{ channelId, type: 0..18, x, z, rot: 0..3, lvl: 0..2 }`: x and z on the 0.5 m lattice within ±256, lvl valid for the type. */
 export function parsePlaceStructure(payload: unknown): PlaceStructure {
   const reader = PayloadReader.strict(payload);
   const fields = isPlainObject(payload) ? payload : {};
@@ -245,5 +248,86 @@ export function parseLogisticsAction(payload: unknown): LogisticsAction {
     }
     case 'grease':
       return { channelId, kind, id: reader.requireInt('id', { min: 0, max: MAX_UINT16 }), point: reader.requireInt('point', { min: 0, max: 3 }) };
+  }
+}
+
+// ---- Phase F ----
+
+/** `miskolc:vehicle_enter`. */
+export interface VehicleEnter {
+  channelId: string;
+  id: number;
+  seat: number;
+}
+
+/** `miskolc:vehicle_drive`: the driver's predicted vehicle pose. */
+export interface VehicleDrive {
+  channelId: string;
+  seq: number;
+  x: number;
+  y: number;
+  z: number;
+  rotY: number;
+}
+
+/** `miskolc:vehicle_action`. */
+export type VehicleAction =
+  | { channelId: string; kind: 'exit' }
+  | { channelId: string; kind: 'tip' }
+  | { channelId: string; kind: 'lights'; mode: 0 | 1 | 2 }
+  | { channelId: string; kind: 'beacon'; on: boolean }
+  | { channelId: string; kind: 'horn' }
+  | { channelId: string; kind: 'load'; id: number }
+  | { channelId: string; kind: 'refuel'; id: number }
+  | { channelId: string; kind: 'repair'; id: number };
+
+export const VEHICLE_ACTION_KINDS = Object.freeze(['exit', 'tip', 'lights', 'beacon', 'horn', 'load', 'refuel', 'repair'] as const);
+const MAX_VEHICLE_ID = 255;
+
+/** Parses `{ channelId, id: 1..255, seat: 0..2 }`. */
+export function parseVehicleEnter(payload: unknown): VehicleEnter {
+  const reader = PayloadReader.strict(payload);
+  return {
+    channelId: reader.requireString('channelId', CHANNEL_ID),
+    id: reader.requireInt('id', { min: 1, max: MAX_VEHICLE_ID }),
+    seat: reader.requireInt('seat', { min: 0, max: MAX_SEATS - 1 })
+  };
+}
+
+/** Parses `{ channelId, seq, x, y, z, rotY }`. */
+export function parseVehicleDrive(payload: unknown): VehicleDrive {
+  const reader = PayloadReader.strict(payload);
+  const fields = isPlainObject(payload) ? payload : {};
+  return {
+    channelId: reader.requireString('channelId', CHANNEL_ID),
+    seq: reader.requireInt('seq', { min: 0, max: MAX_SEQ }),
+    x: finite(fields, 'x'),
+    y: finite(fields, 'y'),
+    z: finite(fields, 'z'),
+    rotY: finite(fields, 'rotY')
+  };
+}
+
+/** Parses a `miskolc:vehicle_action` (exit, tip, lights, beacon, horn, load, refuel, repair). */
+export function parseVehicleAction(payload: unknown): VehicleAction {
+  const reader = PayloadReader.strict(payload);
+  const channelId = reader.requireString('channelId', CHANNEL_ID);
+  const kind = reader.requireEnum('kind', VEHICLE_ACTION_KINDS);
+  switch (kind) {
+    case 'exit':
+    case 'tip':
+    case 'horn':
+      return { channelId, kind };
+    case 'lights':
+      return { channelId, kind, mode: reader.requireEnum('mode', [0, 1, 2] as const) };
+    case 'beacon': {
+      const on = reader.optionalBoolean('on');
+      if (on === undefined) throw new ValidationError(INVALID_PAYLOAD_MESSAGE, { field: 'on', reason: 'missing', message: '"on" is required.' });
+      return { channelId, kind, on };
+    }
+    case 'load':
+    case 'refuel':
+    case 'repair':
+      return { channelId, kind, id: reader.requireInt('id', { min: 1, max: MAX_VEHICLE_ID }) };
   }
 }

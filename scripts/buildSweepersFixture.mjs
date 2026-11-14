@@ -42,7 +42,8 @@ const events = {
   logisticsTelemetry: () => undefined,
   scaleWeighed: () => undefined,
   inspection: () => undefined,
-  economy: () => undefined
+  economy: () => undefined,
+  vehicleUpdate: () => undefined
 };
 const service = new SweepersService({
   store, events, clock, scheduler: () => () => undefined, logger: new Logger({ minLevel: 'error', sink: () => undefined })

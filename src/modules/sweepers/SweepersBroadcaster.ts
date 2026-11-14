@@ -8,6 +8,7 @@ import type {
   DebrisChunkUpdate, DistrictUnlockedPayload, InitStatePayload, PlayerSnapshot, ScaleWeighedPayload, StructureSpawnedPayload,
   SweepersKickedPayload, SweepersSessionSummary, SweepersSessionUpdate, TickSyncPayload
 } from './types.ts';
+import type { VehicleUpdate } from './vehicles/VehicleWorld.ts';
 import type { WeatherPayload } from './weather.ts';
 
 /** Socket.io room of the players of one channel's world. */
@@ -45,6 +46,8 @@ export interface SweepersEvents {
   inspection(channelId: string, payload: InspectionPayload): void;
   /** `miskolc:economy` to the world, at most once per tick. */
   economy(channelId: string, payload: EconomyUpdate): void;
+  /** `miskolc:vehicle_update` to the world, at most once per tick (Phase F). */
+  vehicleUpdate(channelId: string, payload: VehicleUpdate): void;
 }
 
 /** {@link SweepersEvents} over socket.io. */
@@ -122,6 +125,10 @@ export class SweepersBroadcaster implements SweepersEvents {
 
   economy(channelId: string, payload: EconomyUpdate): void {
     this.#io.to(sweepersRoomOf(channelId)).emit(SWEEPERS_EVENTS.economy, payload);
+  }
+
+  vehicleUpdate(channelId: string, payload: VehicleUpdate): void {
+    this.#io.to(sweepersRoomOf(channelId)).emit(SWEEPERS_EVENTS.vehicleUpdate, payload);
   }
 
   /** To the voice channel and the world's players (as phobia does), not the whole server. */

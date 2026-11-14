@@ -93,7 +93,8 @@ const events = {
   districtUnlocked: record('miskolc:district_unlocked'), clock: () => undefined, clockTo: () => undefined, weather: () => undefined,
   debrisUpdate: () => undefined, personalUpdate: record('miskolc:personal_update'), structureSpawned: record('miskolc:structure_spawned'),
   logisticsUpdate: record('miskolc:logistics_update'), logisticsTelemetry: record('miskolc:logistics_telemetry'),
-  scaleWeighed: record('miskolc:scale_weighed'), inspection: record('miskolc:inspection'), economy: record('miskolc:economy')
+  scaleWeighed: record('miskolc:scale_weighed'), inspection: record('miskolc:inspection'), economy: record('miskolc:economy'),
+  vehicleUpdate: () => undefined
 };
 const service = new SweepersService({ store, events, clock, scheduler: () => () => undefined, logger: new Logger({ minLevel: 'error', sink: () => undefined }) });
 const since = (from, event) => emitted.slice(from).filter((e) => e.event === event).map((e) => e.payload);

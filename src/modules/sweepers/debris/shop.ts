@@ -10,7 +10,8 @@ import {
 } from './tables.ts';
 
 export const BUY_ITEMS = Object.freeze([
-  'tool', 'width', 'pack', 'hard', 'gloves', 'repair', 'fuel', 'beer', 'kofola', 'zsiros', 'bag', 'grease', 'blueprint', 'diesel', 'license'
+  'tool', 'width', 'pack', 'hard', 'gloves', 'repair', 'fuel', 'beer', 'kofola', 'zsiros', 'bag', 'grease', 'blueprint', 'diesel', 'license',
+  'vehicle', 'jerrycan'
 ] as const);
 /** Bag quantities per purchase (Phase D). */
 export const BAG_QTY = Object.freeze([1, 5, 10] as const);
@@ -20,7 +21,7 @@ export type BuyItem = (typeof BUY_ITEMS)[number];
 export interface BuyRequest {
   channelId: string;
   item: BuyItem;
-  /** Tool id: 1..6 for `tool`, 1..3 for `repair`; bag tier 0..2 for `bag`; machine 0..3 for `blueprint`; district 1..5 for `license`. */
+  /** Tool id: 1..6 for `tool`, 1..3 for `repair`; bag tier 0..2 for `bag`; machine 0..3 for `blueprint`; district 1..5 for `license`; vehicle type 0..5; jerry can fuel 0..1. */
   tier?: number;
   /** Target level for width / pack / hard. */
   level?: number;
@@ -116,7 +117,9 @@ export function buy(data: PersonalData, request: BuyRequest, layout: CityLayout,
     case 'blueprint':
     case 'diesel':
     case 'license':
-      throw new Error(`team item ${item} is bought with teamPurchase`);
+    case 'vehicle':
+    case 'jerrycan':
+      throw new Error(`team item ${item} is bought by the room`);
     case 'bag': {
       const tier = request.tier ?? 0;
       const qty = request.qty ?? 1;

@@ -14,7 +14,7 @@ test('tables: bag tiers, structure order, rotY and the ports of every type', () 
   ]);
   assert.deepEqual(STRUCT_TYPES.map((t) => t.key), [
     'found2', 'found4', 'belt1', 'belt2', 'belt5', 'bendL', 'bendR', 'rampUp', 'rampDown', 'splitter', 'merger', 'hopper', 'packager', 'fence',
-    'stripper', 'baler', 'magnet', 'trommel'
+    'stripper', 'baler', 'magnet', 'trommel', 'garage'
   ]);
   assert.deepEqual([0, 1, 2, 3].map(rotYOf), [0, -Math.PI / 2, Math.PI, Math.PI / 2]);
   // rot 1 faces +x: a belt5 at the origin feeds in from −x and out at +x.

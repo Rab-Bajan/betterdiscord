@@ -1,4 +1,4 @@
-// MiskolcSweepers wire protocol (Phases A–E). Units: metres, y-up, rotation in radians.
+// MiskolcSweepers wire protocol (Phases A–F). Units: metres, y-up, rotation in radians.
 // Later phases extend these shapes; they never rename a field or an event.
 
 import type { CityLayout } from './city/layoutTypes.ts';
@@ -8,6 +8,7 @@ import type { PersonalStatePayload } from './debris/personal.ts';
 import type { EconomyInit } from './economy/Economy.ts';
 import type { ReceiptLine } from './economy/payout.ts';
 import type { LogisticsInit, StructRow } from './logistics/LogisticsWorld.ts';
+import type { VehicleRow } from './vehicles/VehicleWorld.ts';
 import type { WeatherPayload } from './weather.ts';
 
 /** Animation / activity state of a player; the index of each entry is the protocol value. */
@@ -45,7 +46,11 @@ export const SWEEPERS_EVENTS = Object.freeze({
   logisticsTelemetry: 'miskolc:logistics_telemetry',
   scaleWeighed: 'miskolc:scale_weighed',
   inspection: 'miskolc:inspection',
-  economy: 'miskolc:economy'
+  economy: 'miskolc:economy',
+  vehicleEnter: 'miskolc:vehicle_enter',
+  vehicleDrive: 'miskolc:vehicle_drive',
+  vehicleAction: 'miskolc:vehicle_action',
+  vehicleUpdate: 'miskolc:vehicle_update'
 } as const);
 
 /** Position, heading and activity of a player. */
@@ -114,6 +119,8 @@ export interface InitStatePayload {
   logistics: LogisticsInit;
   /** Power grid, blueprints, LME and inspector (Phase E). */
   economy: EconomyInit;
+  /** Every vehicle of the room (Phase F). */
+  vehicles: VehicleRow[];
 }
 
 /** `miskolc:scale_weighed` (spec name), room-wide after a weighing (Phase E). */
@@ -133,6 +140,8 @@ export interface ScaleWeighedPayload {
   to: number[];
   /** LME epoch of the sale. */
   epoch: number;
+  /** A weighed vehicle (Phase F): `kgDg` is the net; gross = net + tare. */
+  veh?: { id: number; type: number; tareKg: number };
 }
 
 /** `miskolc:structure_spawned`, room-wide on a place. */

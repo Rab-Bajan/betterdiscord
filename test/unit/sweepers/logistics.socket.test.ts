@@ -2,6 +2,7 @@
 // (at the spawn point, as the Phase C e2e) → walk to the office and buy a bag → tie_bag (a bag row at a valid point) → place a belt → pick up and throw the bag onto
 // it → its CargoRow s advances along the belt. Phase E (spec 149 test 4, walking variant): a second guest
 // with copper in the pack walks onto the weighbridge, stands 2 s → scale_weighed, economy.funds and the wage.
+// Phase F (spec 149 test 4, vehicle form): buy a Simson, fill its bed (pack + a bag), drive onto the weighbridge.
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import os from 'node:os';
@@ -20,6 +21,7 @@ import { emptyLoad } from '../../../src/modules/sweepers/debris/personal.ts';
 import type { PersonalStatePayload } from '../../../src/modules/sweepers/debris/personal.ts';
 import { SweepersRepository } from '../../../src/modules/sweepers/SweepersRepository.ts';
 import type { InitStatePayload, ScaleWeighedPayload, StructureSpawnedPayload } from '../../../src/modules/sweepers/types.ts';
+import type { VehicleUpdate } from '../../../src/modules/sweepers/vehicles/VehicleWorld.ts';
 import { TestApp, waitFor } from '../support/TestApp.ts';
 import { paint } from './debrisSupport.ts';
 
@@ -172,5 +174,93 @@ test('Phase E: walk onto the weighbridge with copper, stand 2 s → scale_weighe
   const last = personal.at(-1);
   assert.equal(last?.cash, sale.each);
   assert.equal(last?.pack.copperG, 0);
+  client.close();
+});
+
+test('Phase F (spec 149 test 4, vehicle form): buy a Simson → dump the copper pack into the bed → load a bag → drive onto the weighbridge → scale_weighed with veh', async () => {
+  const CHILL = 'hang-chill';
+  const pack = { ...emptyLoad(), copperG: 5_000 };
+  const bagLoad = { ...emptyLoad(), copperG: 2_000 };
+  const database = new SqliteDatabase(dbPath);
+  const repo = new SweepersRepository(database);
+  const logistics = { v: 1, bags: [[1, 0, 0, -160, 0, -900, 0, [0, 0, 0, 0, 0, 2_000, []]]], cargo: [], hoppers: [], packagers: [], crane: { hook: [-850, 0] } };
+  repo.saveRoom({ roomId: CHILL, state: { v: 4, logistics }, cleanliness: {}, teamFunds: 100_000, lastSaved: 1 }, [], null);
+  repo.savePlayerStats({
+    userId: 'name:swdriver', roomId: CHILL, stats: { cash: 0, toolTier: 0, backpackTier: 0, totalKg: 0 }, extra: { v: 4, starter: true, starterBags: true, pack }
+  });
+  database.close();
+  const { client } = await t.joinAsGuest('SwDriver');
+  const economy: EconomyUpdate[] = [];
+  const personal: PersonalStatePayload[] = [];
+  const vehicles: VehicleUpdate[] = [];
+  client.on('miskolc:economy', (u: EconomyUpdate) => { economy.push(u); });
+  client.on('miskolc:personal_update', (p: PersonalStatePayload) => { personal.push(p); });
+  client.on('miskolc:vehicle_update', (u: VehicleUpdate) => { vehicles.push(u); });
+  const initP = waitFor<InitStatePayload>(client, 'miskolc:init_state');
+  assert.deepEqual(await ack(client, 'miskolc:join_room', { channelId: CHILL }), { ok: true });
+  const init = await initP;
+  assert.deepEqual([init.teamFunds, init.vehicles], [100_000, []]);
+  const self = init.players.find((p) => p.id === init.selfId);
+  assert.ok(self);
+  let seq = 0;
+  let x = self.x;
+  let z = self.z;
+  const walkTo = async (tx: number, tz: number): Promise<void> => {
+    while (Math.hypot(tx - x, tz - z) > 1e-6) {
+      const d = Math.hypot(tx - x, tz - z);
+      const step = Math.min(0.6, d);
+      x += ((tx - x) / d) * step;
+      z += ((tz - z) / d) * step;
+      client.emit('miskolc:player_input', { channelId: CHILL, seq: ++seq, x, y: 0, z, rotY: 0, state: 'WALK' });
+      await sleep(100);
+    }
+    client.emit('miskolc:player_input', { channelId: CHILL, seq: ++seq, x, y: 0, z, rotY: 0, state: 'IDLE' });
+    await sleep(200);
+  };
+  await walkTo(SPOT.x, SPOT.z);
+  assert.deepEqual(await ack(client, 'miskolc:buy_upgrade', { channelId: CHILL, item: 'vehicle', tier: 2 }), { ok: true, cash: 0, teamFunds: 15_000 });
+  await sleep(200);
+  const row = vehicles.flatMap((u) => u.v ?? []).find((r) => r[1] === 2);
+  assert.ok(row, 'vehicle_update with the new Simson');
+  const id = row[0];
+  assert.deepEqual(row.slice(1, 5), [2, 0, -1_000, 49_152]);
+  // The bed point of the Simson at its slot (heading +x) is (−1.6, −10); the seeded bag lies at (−1.6, −9).
+  await walkTo(-1.6, -9.4);
+  assert.deepEqual(await ack(client, 'miskolc:logistics_action', { channelId: CHILL, kind: 'pickup', id: 1 }), { ok: true });
+  assert.deepEqual(await ack(client, 'miskolc:player_action', { channelId: CHILL, kind: 'dump' }), { ok: true, bedKg: 5 });
+  assert.deepEqual(await ack(client, 'miskolc:vehicle_action', { channelId: CHILL, kind: 'load', id }), { ok: true, bedKg: 7 });
+  assert.deepEqual(await ack(client, 'miskolc:vehicle_enter', { channelId: CHILL, id, seat: 0 }), { ok: true, seat: 0 });
+  const wb = cityLayout().landmarks.weighbridge;
+  const weighedP = waitFor<ScaleWeighedPayload>(client, 'miskolc:scale_weighed', () => true, 15_000);
+  // Drive at 8 m/s (top 10.6) in 50 ms steps: east to (6, −10), then to the weighbridge centre.
+  let vx = 0;
+  let vz = -10;
+  let dseq = 0;
+  for (const [tx, tz] of [[6, -10], [wb.x, wb.z]] as const) {
+    while (Math.hypot(tx - vx, tz - vz) > 1e-6) {
+      const d = Math.hypot(tx - vx, tz - vz);
+      const step = Math.min(0.4, d);
+      const rotY = Math.atan2(-(tx - vx), -(tz - vz));
+      vx += ((tx - vx) / d) * step;
+      vz += ((tz - vz) / d) * step;
+      client.emit('miskolc:vehicle_drive', { channelId: CHILL, seq: ++dseq, x: vx, y: 0, z: vz, rotY });
+      await sleep(50);
+    }
+  }
+  const stoppedAt = Date.now();
+  const sale = await weighedP;
+  assert.ok(Date.now() - stoppedAt >= 1_800, 'not before 2 s of stillness');
+  const bill = receipt([{ load: pack, proc: 0 }, { load: bagLoad, proc: 0 }], lmeRow(sale.epoch).pct);
+  assert.deepEqual(sale.veh, { id, type: 2, tareKg: 140 });
+  assert.deepEqual([sale.scale, sale.by, sale.kgDg, sale.total], [0, init.selfId, 700, bill.total]);
+  assert.deepEqual(sale.lines, bill.lines);
+  assert.equal(sale.each, Math.floor(0.2 * bill.total));
+  assert.equal(sale.team, bill.total - sale.each);
+  await sleep(300);
+  assert.equal(economy.map((u) => u.funds).filter((f) => f !== undefined).at(-1), 15_000 + sale.team);
+  assert.equal(personal.at(-1)?.cash, sale.each);
+  const last = vehicles.flatMap((u) => u.v ?? []).filter((r) => r[0] === id).at(-1);
+  assert.ok(last && last[8] === 0 && last[9] === 0 && last[10] === init.selfId, JSON.stringify(last));
+  assert.ok(Math.hypot(last[2] / 100 - wb.x, last[3] / 100 - wb.z) < 0.05, JSON.stringify(last));
   client.close();
 });

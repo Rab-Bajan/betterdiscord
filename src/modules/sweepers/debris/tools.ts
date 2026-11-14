@@ -42,14 +42,18 @@ export const DUMP_IRON_MAX_DG = 1_500;
 export const DUMP_COPPER_MAX_DG = 800;
 const EPS_KG = 1e-6;
 
-/** What a use needs to know besides the debris and the player. */
-export interface UseContext {
+/** What a vehicle brush sweep needs (Phase F). */
+export interface BrushContext {
   world: DebrisWorld;
-  data: PersonalData;
-  now: number;
   /** Open districts. */
   unlocked: ReadonlySet<number>;
   drizzle: boolean;
+}
+
+/** What a use needs to know besides the debris and the player. */
+export interface UseContext extends BrushContext {
+  data: PersonalData;
+  now: number;
   /** Random draw (vacuum clog), injectable for tests. */
   chance(p: number): boolean;
 }
@@ -72,7 +76,7 @@ const refuse = (key: keyof typeof SWEEPERS_ERRORS): SweepersError => new Sweeper
 
 const hexDistrict = (hex: number): number => HEX_CELLS[hex]?.district ?? 0;
 
-const itemOpen = (ctx: UseContext, item: Item): boolean => item.hex >= 0 && ctx.unlocked.has(hexDistrict(item.hex));
+const itemOpen = (ctx: BrushContext, item: Item): boolean => item.hex >= 0 && ctx.unlocked.has(hexDistrict(item.hex));
 
 /** Grams of an item as it goes into a load. */
 function addItemToLoad(load: Load, item: Item): void {
@@ -110,12 +114,28 @@ interface CellPlan {
   seedKg: number;
 }
 
-/** Planned cell changes of a sweep in `region` (nearest cells first). */
-function planCells(ctx: UseContext, region: Region, tool: number, classes: { dust: boolean; seed: boolean }): CellPlan[] {
+/** How a sweep reduces a cell: f by dry surface, dust efficiency by heavy surface, seed efficiency. */
+interface CellRule {
+  f(dry: boolean): number;
+  effDust(heavy: boolean): number;
+  effSeed: number;
+}
+
+/** The C.3 cell rule of a tool use. */
+function toolCellRule(ctx: UseContext, region: Region, tool: number): CellRule {
   const spec = toolOf(tool);
   const area = regionArea(region);
-  const ext = regionExtent(region);
   const stench = effectActive(ctx.data, 'stench', ctx.now) ? 0.5 : 1;
+  return {
+    f: (dry) => sweepFraction(spec.speed, spec.cadence, stench * (tool === 2 && dry ? 1.15 : 1), area),
+    effDust: (heavy) => (tool === 1 ? 0.6 : 1) * (heavy ? 0.5 * hardEff(ctx.data) : 1),
+    effSeed: 1
+  };
+}
+
+/** Planned cell changes of a sweep in `region` (nearest cells first). */
+function planCells(ctx: BrushContext, region: Region, classes: { dust: boolean; seed: boolean }, rule: CellRule): CellPlan[] {
+  const ext = regionExtent(region);
   const grid = ctx.world.grid;
   const plans: Array<CellPlan & { d: number }> = [];
   let centres = 0;
@@ -131,14 +151,12 @@ function planCells(ctx: UseContext, region: Region, tool: number, classes: { dus
     const byte = ctx.world.cells[index] ?? 0;
     if (byte === 0) return;
     const surface = grid.cellSurface[index] ?? 0;
-    const dry = surface === 0 && !ctx.drizzle;
-    const f = sweepFraction(spec.speed, spec.cadence, stench * (tool === 2 && dry ? 1.15 : 1), area);
+    const f = rule.f(surface === 0 && !ctx.drizzle);
     const heavy = district === 3 || (surface >= 1 && surface <= 3) || ctx.drizzle;
-    const effDust = (tool === 1 ? 0.6 : 1) * (heavy ? 0.5 * hardEff(ctx.data) : 1);
     const dust = byte >> 4;
     const seed = byte & 15;
-    const newDust = classes.dust ? reducedLevel(dust, f, Math.min(1, effDust)) : dust;
-    const newSeed = classes.seed ? reducedLevel(seed, f, 1) : seed;
+    const newDust = classes.dust ? reducedLevel(dust, f, Math.min(1, rule.effDust(heavy))) : dust;
+    const newSeed = classes.seed ? reducedLevel(seed, f, rule.effSeed) : seed;
     if (newDust === dust && newSeed === seed) return;
     plans.push({
       index, byte: (newDust << 4) | newSeed, d: Math.hypot(x - region.ox, z - region.oz),
@@ -309,7 +327,7 @@ function sweep(ctx: UseContext, tool: number, ox: number, oz: number, rotY: numb
   const result: UseResult = { kg: 0, items: [], pushed: false };
   // Cells.
   let free = Math.max(0, bufFree(data));
-  const plans = planCells(ctx, region, tool, { dust: true, seed: !vacuum });
+  const plans = planCells(ctx, region, { dust: true, seed: !vacuum }, toolCellRule(ctx, region, tool));
   let takenDust = 0;
   let takenSeed = 0;
   let pushDust = 0;
@@ -390,6 +408,38 @@ function sweepTakes(tool: number, item: Item): boolean {
     case KIND.cabbage: return tool <= 3;
     default: return false;
   }
+}
+
+/**
+ * A vehicle brush / suction pass (Phase F, 95/96) over `region` into `into`, up to `freeKg`: cells at
+ * f = 1 with `eff` (dust × 0.5 on heavy surfaces / drizzle, as C.3), whole piles while they fit, then the
+ * items the industrial broom takes. Nothing is pushed; no stamina, no wear. Returns the kg and item ids taken.
+ */
+export function brushSweep(ctx: BrushContext, region: Region, eff: number, freeKg: number, into: Load): { kg: number; items: number[] } {
+  let free = Math.max(0, freeKg);
+  let kg = 0;
+  const items: number[] = [];
+  for (const plan of planCells(ctx, region, { dust: true, seed: true }, { f: () => 1, effDust: (heavy) => eff * (heavy ? 0.5 : 1), effSeed: eff })) {
+    const planKg = plan.dustKg + plan.seedKg;
+    if (planKg > free + EPS_KG) break;
+    ctx.world.setCell(plan.index, plan.byte);
+    into.dustG += plan.dustKg * 1000;
+    into.seedG += plan.seedKg * 1000;
+    free -= planKg;
+    kg += planKg;
+  }
+  for (const { item } of ctx.world.itemsNear(region.ox, region.oz, regionExtent(region))) {
+    if (!itemOpen(ctx, item) || !inRegion(region, item.x, item.z)) continue;
+    if (item.kind !== KIND.pile && !sweepTakes(3, item)) continue;
+    const itemKgNow = itemKg(item);
+    if (itemKgNow > free + EPS_KG) continue;
+    ctx.world.remove(item.id);
+    addItemToLoad(into, item);
+    free -= itemKgNow;
+    kg += itemKgNow;
+    items.push(item.id);
+  }
+  return { kg, items };
 }
 
 /** The leaf blower, LMB: cells → a pile 7 m ahead, loose cans scattered there; iron and copper stay. */

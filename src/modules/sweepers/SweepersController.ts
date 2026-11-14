@@ -10,7 +10,7 @@ import type { PlayerIdentity } from './SweepersPlayer.ts';
 import type { SweepersService } from './SweepersService.ts';
 import {
   parseBuyUpgrade, parseChannel, parseDeleteStructure, parseLogisticsAction, parsePlaceStructure, parsePlayerAction, parsePlayerInput,
-  parseRoomRequest, parseSweepHit, parseTieBag
+  parseRoomRequest, parseSweepHit, parseTieBag, parseVehicleAction, parseVehicleDrive, parseVehicleEnter
 } from './payloads.ts';
 import { SWEEPERS_EVENTS } from './types.ts';
 
@@ -28,6 +28,8 @@ const TIE_RATE = 2;
 const BUILD_RATE = 4;
 const BUILD_BURST = 6;
 const LOGISTICS_RATE = 4;
+/** Phase F: `vehicle_enter` + `vehicle_action` share 6/s burst 6 (`vehicle_drive` shares `player_input`'s limiter). */
+const VEHICLE_RATE = 6;
 
 const rateLimited = (): SweepersError => new SweepersError(SWEEPERS_ERRORS.tooManyRequests, undefined, SweepersError.RATE_LIMITED_CODE);
 
@@ -39,6 +41,7 @@ export interface SweepersLimits {
   tie: InputRateLimiter;
   build: InputRateLimiter;
   logistics: InputRateLimiter;
+  vehicle: InputRateLimiter;
 }
 
 /** `miskolc:join_room`, `leave_room`, `player_input`, `sweep_hit`, `player_action`, `buy_upgrade`, the Phase D events and the disconnect. */
@@ -58,6 +61,7 @@ export class SweepersController extends SocketController {
   readonly #tieLimit: InputRateLimiter;
   readonly #buildLimit: InputRateLimiter;
   readonly #logisticsLimit: InputRateLimiter;
+  readonly #vehicleLimit: InputRateLimiter;
 
   constructor(
     service: SweepersService, users: UserRegistry, voiceChannels: readonly VoiceChannel[], logger: Logger,
@@ -76,6 +80,7 @@ export class SweepersController extends SocketController {
     this.#tieLimit = limits.tie ?? new InputRateLimiter(TIE_RATE, TIE_RATE);
     this.#buildLimit = limits.build ?? new InputRateLimiter(BUILD_RATE, BUILD_BURST);
     this.#logisticsLimit = limits.logistics ?? new InputRateLimiter(LOGISTICS_RATE, LOGISTICS_RATE);
+    this.#vehicleLimit = limits.vehicle ?? new InputRateLimiter(VEHICLE_RATE, VEHICLE_RATE);
     this.#channels = new Set(voiceChannels.map((c) => c.id));
   }
 
@@ -117,8 +122,7 @@ export class SweepersController extends SocketController {
 
     this.listen(socket, SWEEPERS_EVENTS.playerAction, (payload) => {
       if (!this.#actionLimit.take(socket.id)) throw rateLimited();
-      const hopperKg = this.#service.playerAction(socket.id, parsePlayerAction(payload));
-      return hopperKg === null ? { ok: true } : { ok: true, hopperKg };
+      return { ok: true, ...this.#service.playerAction(socket.id, parsePlayerAction(payload)) };
     });
 
     // Phase D: room → bucket → guard → rules (D.4 order).
@@ -150,6 +154,24 @@ export class SweepersController extends SocketController {
       return this.#service.logisticsAction(socket.id, parseLogisticsAction(payload));
     });
 
+    // Phase F (F.4).
+    this.listen(socket, SWEEPERS_EVENTS.vehicleEnter, (payload) => {
+      limited(this.#vehicleLimit, payload);
+      return { ok: true, seat: this.#service.vehicleEnter(socket.id, parseVehicleEnter(payload)) };
+    });
+
+    this.listen(socket, SWEEPERS_EVENTS.vehicleDrive, (payload) => {
+      // Shares player_input's 30/s limiter; over it: dropped silently, no ack.
+      if (!this.#inputLimit.take(socket.id)) return undefined;
+      this.#service.vehicleDrive(socket.id, parseVehicleDrive(payload));
+      return { ok: true };
+    });
+
+    this.listen(socket, SWEEPERS_EVENTS.vehicleAction, (payload) => {
+      limited(this.#vehicleLimit, payload);
+      return this.#service.vehicleAction(socket.id, parseVehicleAction(payload));
+    });
+
     this.listen(socket, SWEEPERS_EVENTS.buyUpgrade, (payload) => {
       if (!this.#buyLimit.take(socket.id)) throw rateLimited();
       return { ok: true, ...this.#service.buyUpgrade(socket.id, parseBuyUpgrade(payload)) };
@@ -164,6 +186,7 @@ export class SweepersController extends SocketController {
       this.#tieLimit.forget(socket.id);
       this.#buildLimit.forget(socket.id);
       this.#logisticsLimit.forget(socket.id);
+      this.#vehicleLimit.forget(socket.id);
       this.#service.disconnect(socket.id);
     });
   }

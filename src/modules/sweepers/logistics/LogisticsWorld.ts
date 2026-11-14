@@ -861,12 +861,12 @@ export class LogisticsWorld {
     return n;
   }
 
-  /** Creates a ground bag (tie). Null at the room cap or when the id space is full. */
-  newBag(tier: number, load: Load, x: number, z: number, rotY: number, dirX: number, dirZ: number): Bag | null {
-    if (this.bags.size >= CAPS.bags) return null;
+  /** Creates a ground bag (tie; a vehicle tip passes `capped` false and its tint). Null at the room cap or when the id space is full. */
+  newBag(tier: number, load: Load, x: number, z: number, rotY: number, dirX: number, dirZ: number, capped = true, tint = 0): Bag | null {
+    if (capped && this.bags.size >= CAPS.bags) return null;
     const id = lowestFree(this.#entityIds());
     if (id === null) return null;
-    const bag: Bag = { id, tier, tint: 0, st: 0, x, y: 0, z, rot8: rot8Of(rotY), load, on: 0, carrier: 0 };
+    const bag: Bag = { id, tier, tint, st: 0, x, y: 0, z, rot8: rot8Of(rotY), load, on: 0, carrier: 0 };
     this.bags.set(id, bag);
     this.#land(bag, x, z, Infinity, -Infinity, dirX, dirZ, false);
     return bag;
@@ -962,9 +962,8 @@ export class LogisticsWorld {
         break;
       }
       const hop = this.#hopperZone(p.x, p.y, p.z);
-      if (hop && hop.queue.length < HOPPER_BAG_QUEUE) {
+      if (hop && this.#queueBag(hop, bag)) {
         const durMs = Math.round(t * 1000);
-        this.#queueBag(hop, bag);
         this.#arc(bag.id, sx, sy, sz, p.x, p.y, p.z, apex, durMs);
         return { id: bag.id, to: [cm(p.x), cm(p.y), cm(p.z)], into: 'hopper', burst: false };
       }
@@ -1036,9 +1035,23 @@ export class LogisticsWorld {
     return this.#colliders.near(x, z, 0).some((c) => penetration(c, x, z, 0) !== null && y < this.ground(c.x, c.z) + c.h);
   }
 
-  #queueBag(hop: LogNode, bag: Bag): void {
+  /** Queues `bag` in a hopper's bag queue (a thrown bag landing in the zone, a vehicle tip); false when the queue is full. */
+  #queueBag(hop: LogNode, bag: Bag): boolean {
+    if (hop.queue.length >= HOPPER_BAG_QUEUE) return false;
     const c: Cargo = { id: bag.id, kind: 1, sub: bag.tier, tint: bag.tint, node: hop.id, s: 0, route: 0, way: 0, mv: 0, waitMs: 0, load: emptyLoad(), bag, tick: this.#tick };
     this.#intoHopper(hop, c);
+    return true;
+  }
+
+  /** A vehicle bed bag tipped into hopper `nodeId` (F.2): a new bag in its queue. False when full, not a hopper, or the id space is full. */
+  queueIntoHopper(nodeId: number, tier: number, tint: number, load: Load): boolean {
+    const hop = this.nodes.get(nodeId);
+    const id = hop?.intake && hop.queue.length < HOPPER_BAG_QUEUE ? lowestFree(this.#entityIds()) : null;
+    if (!hop || id === null) return false;
+    const r = hop.intake;
+    const bag: Bag = { id, tier, tint, st: 0, x: r ? (r.minX + r.maxX) / 2 : 0, y: 0, z: r ? (r.minZ + r.maxZ) / 2 : 0, rot8: 0, load, on: 0, carrier: 0 };
+    this.bags.set(id, bag);
+    return this.#queueBag(hop, bag);
   }
 
   /**

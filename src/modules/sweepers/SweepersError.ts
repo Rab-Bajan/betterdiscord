@@ -74,7 +74,26 @@ export const SWEEPERS_ERRORS = Object.freeze({
   noGreaseGun: 'Kell egy zsírzóprés (MÉH műhely).',
   noGreaseNeeded: 'Ez a gép most nem szorul zsírzásra.',
   notAtServicePoint: 'Menj közelebb egy kenési ponthoz.',
-  alreadyGreased: 'Ezt a pontot már megzsíroztad.'
+  alreadyGreased: 'Ezt a pontot már megzsíroztad.',
+  // Phase F (plan F.8).
+  unknownVehicle: 'Nincs ilyen jármű.',
+  alreadySeated: 'Már ülsz egy járműben.',
+  notSeated: 'Nem ülsz járműben.',
+  seatTaken: 'Ez a hely foglalt.',
+  vehicleMoving: 'Előbb állj meg a járművel.',
+  notDriver: 'Ezt csak a sofőr teheti.',
+  driving: 'Vezetés közben nem söpörhetsz.',
+  bedFull: 'Megtelt a plató.',
+  bedEmpty: 'Üres a plató.',
+  noJerryCan: 'Kell egy teli benzineskanna (MÉH műhely).',
+  wrongFuel: 'Ebbe más üzemanyag kell.',
+  noFuelTank: 'Ennek nincs tankja.',
+  noLights: 'Ennek nincs lámpája.',
+  noBeacon: 'Ezen nincs villogó.',
+  noHorn: 'Ezen nincs légkürt.',
+  nothingToRepair: 'Ezen nincs mit javítani.',
+  exitBlocked: 'Itt nem tudsz kiszállni – állj odébb a járművel.',
+  slotBlocked: 'A jármű helyét elfoglalja egy épületelem – előbb bontsd le.'
 });
 
 /** A refusal with the D.8 / C.8 text of `key` (`SWEEPERS_REFUSED`). */

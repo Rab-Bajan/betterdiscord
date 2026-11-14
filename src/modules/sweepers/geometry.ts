@@ -111,13 +111,13 @@ export function resolveCircle(colliders: readonly Collider[], x: number, z: numb
   return { x: px, z: pz, hit };
 }
 
-/** Uniform-grid index of the blocking colliders (step-over ones are left out). */
+/** Uniform-grid index of the blocking colliders (step-over ones are left out), or of those `keep` selects. */
 export class ColliderIndex {
   readonly #cells = new Map<string, Collider[]>();
 
-  constructor(colliders: readonly Collider[]) {
+  constructor(colliders: readonly Collider[], keep: (collider: Collider) => boolean = isBlocking) {
     for (const collider of colliders) {
-      if (!isBlocking(collider)) continue;
+      if (!keep(collider)) continue;
       const reach = collider.shape === 'cyl' ? collider.r : Math.hypot(collider.w, collider.d) / 2;
       for (const key of ColliderIndex.#keys(collider.x, collider.z, reach)) {
         const list = this.#cells.get(key);
