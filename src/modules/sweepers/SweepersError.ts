@@ -1,0 +1,113 @@
+import { AppError } from '../../core/errors/AppError.ts';
+
+/** A refused sweepers request; the (Hungarian) message goes to the client in the ack. */
+export class SweepersError extends AppError {
+  static readonly CODE = 'SWEEPERS_REFUSED';
+  /** A throttled `miskolc:join_room`: the client may retry after ~600 ms. */
+  static readonly RATE_LIMITED_CODE = 'SWEEPERS_RATE_LIMITED';
+  /** A use earlier than its cadence allows (or a stale seq): the client handles it silently. */
+  static readonly TOO_FAST_CODE = 'SWEEPERS_TOO_FAST';
+
+  constructor(message: string, details?: Record<string, unknown>, code: string = SweepersError.CODE) {
+    super(code, message, details);
+  }
+}
+
+/** Client-facing refusal messages. */
+export const SWEEPERS_ERRORS = Object.freeze({
+  notLoggedIn: 'Előbb jelentkezz be.',
+  unknownChannel: 'Ismeretlen hangszoba.',
+  notInRoom: 'Nem vagy ebben a világban.',
+  shuttingDown: 'A szerver éppen leáll, próbáld újra később.',
+  roomNotLoaded: 'Ez a világ nincs betöltve.',
+  tooManyRequests: 'Túl gyorsan próbálkozol, várj egy kicsit.',
+  // Phase C (plan C.8).
+  tooFar: 'Túl messze vagy ehhez.',
+  notOwned: 'Ez az eszköz még nincs meg neked.',
+  notEquipped: 'Nem ez az eszköz van a kezedben.',
+  exhausted: 'Kifulladtál – pihenj egy kicsit!',
+  tankFull: 'Tele a tartály.',
+  packFull: 'Tele a hátizsák – zsákold be (Q) vagy borítsd ki (G).',
+  tooHeavy: 'Ez túl nehéz vagy túl nagy a hátizsákodnak.',
+  noFuel: 'Kifogyott a benzin – tankolj a MÉH műhelyben.',
+  clogged: 'Eldugult a cső – fújd ki (jobb klikk)!',
+  lockedDistrict: 'Ez a kerület még le van zárva.',
+  notEnoughCash: 'Nincs elég pénzed: {price} Ft kell.',
+  notAtWorkbench: 'Ezt csak a MÉH műhelyben veheted meg.',
+  notAtKiosk: 'Frissítőt a büfében vagy a MÉH irodában vehetsz.',
+  alreadyOwned: 'Ez már megvan.',
+  maxLevel: 'Ez már a legmagasabb szint.',
+  staleLevel: 'Közben változott a szinted, próbáld újra.',
+  noRepairNeeded: 'Ez az eszköz nem szorul javításra.',
+  emptyPack: 'Üres a hátizsák.',
+  unknownItem: 'Ismeretlen tárgy.',
+  // Phase D (plan D.8).
+  handsFull: 'Tele a kezed – előbb tedd le a zsákot.',
+  notCarrying: 'Nincs a kezedben zsák.',
+  noBags: 'Nincs ilyen zsákod – vegyél a MÉH műhelyben.',
+  bagTooSmall: 'Ez nem fér bele ebbe a zsákba.',
+  tooManyBags: 'Túl sok zsák van már ebben a világban.',
+  bagStockFull: 'Ebből a zsákból nem fér több a raktáradba.',
+  noBagNear: 'Nincs zsák a közelben.',
+  bigBagCrane: 'A Big-Bag-et csak daruval lehet mozgatni.',
+  outOfGrid: 'A városon kívül nem építhetsz.',
+  reserved: 'Ez a terület foglalt (mérleg, garat vagy daru).',
+  buildLimit: 'Elérted az építési korlátot: {what}.',
+  blocked: 'Ide nem lehet építeni: valami útban van.',
+  notFlat: 'Túl egyenetlen a talaj – rakj le előbb betonalapot.',
+  supportsStructures: 'Előbb bontsd le, ami rajta áll.',
+  unknownStructure: 'Ismeretlen épületelem.',
+  notJammed: 'Ez a szalag nincs elakadva.',
+  needBroom: 'Seprűvel kell megütni a vészgombot.',
+  notAtCrane: 'A darut a vezérlőpultnál irányíthatod.',
+  craneBusy: 'A daru éppen dolgozik.',
+  craneTargetBusy: 'A célhely foglalt.',
+  notInCraneArea: 'Ez a zsák nincs a daru hatókörében.',
+  hopperFull: 'Tele a garat.',
+  notAtTerminal: 'A logisztikai terminál a MÉH irodánál van.',
+  // Phase E (plan E.8).
+  notEnoughTeamFunds: 'Nincs elég pénz a csapatkasszában: {price} Ft kell.',
+  noBlueprint: 'Ehhez a géphez előbb meg kell venni a tervrajzot.',
+  alreadyUnlocked: 'Ez a kerület már nyitva van.',
+  notAtGenerator: 'A generátort csak mellette tudod kapcsolni.',
+  noDiesel: 'Kifogyott a gázolaj – vegyél kannát a MÉH irodában.',
+  noGreaseGun: 'Kell egy zsírzóprés (MÉH műhely).',
+  noGreaseNeeded: 'Ez a gép most nem szorul zsírzásra.',
+  notAtServicePoint: 'Menj közelebb egy kenési ponthoz.',
+  alreadyGreased: 'Ezt a pontot már megzsíroztad.',
+  // Phase F (plan F.8).
+  unknownVehicle: 'Nincs ilyen jármű.',
+  alreadySeated: 'Már ülsz egy járműben.',
+  notSeated: 'Nem ülsz járműben.',
+  seatTaken: 'Ez a hely foglalt.',
+  vehicleMoving: 'Előbb állj meg a járművel.',
+  notDriver: 'Ezt csak a sofőr teheti.',
+  driving: 'Vezetés közben nem söpörhetsz.',
+  bedFull: 'Megtelt a plató.',
+  bedEmpty: 'Üres a plató.',
+  noJerryCan: 'Kell egy teli benzineskanna (MÉH műhely).',
+  wrongFuel: 'Ebbe más üzemanyag kell.',
+  noFuelTank: 'Ennek nincs tankja.',
+  noLights: 'Ennek nincs lámpája.',
+  noBeacon: 'Ezen nincs villogó.',
+  noHorn: 'Ezen nincs légkürt.',
+  nothingToRepair: 'Ezen nincs mit javítani.',
+  exitBlocked: 'Itt nem tudsz kiszállni – állj odébb a járművel.',
+  slotBlocked: 'A jármű helyét elfoglalja egy épületelem – előbb bontsd le.'
+});
+
+/** A refusal with the D.8 / C.8 text of `key` (`SWEEPERS_REFUSED`). */
+export const refusal = (key: keyof typeof SWEEPERS_ERRORS, details: Record<string, unknown> = {}): SweepersError =>
+  new SweepersError(SWEEPERS_ERRORS[key], { reason: key, ...details });
+
+const grouped = (price: number): string => String(Math.round(price)).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+
+/** `notEnoughCash` with the price filled in (thousands grouped with a space: 1 500). */
+export function notEnoughCash(price: number): string {
+  return SWEEPERS_ERRORS.notEnoughCash.replace('{price}', grouped(price));
+}
+
+/** `notEnoughTeamFunds` with the price filled in. */
+export function notEnoughTeamFunds(price: number): SweepersError {
+  return new SweepersError(SWEEPERS_ERRORS.notEnoughTeamFunds.replace('{price}', grouped(price)), { reason: 'notEnoughTeamFunds', price });
+}

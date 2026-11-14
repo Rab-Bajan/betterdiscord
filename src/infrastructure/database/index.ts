@@ -1,7 +1,7 @@
 export { SqliteDatabase, IN_MEMORY, type DatabaseLogger } from './SqliteDatabase.ts';
 export { BaseRepository, type Statement } from './BaseRepository.ts';
 export { SchemaMigrator } from './schema/SchemaMigrator.ts';
-export { MIGRATIONS, type Migration } from './schema/migrations.ts';
+export { MIGRATIONS, MISKOLC_SWEEPERS_MIGRATION, NON_LEGACY_TABLES, type Migration } from './schema/migrations.ts';
 export { AccountRepository } from './repositories/AccountRepository.ts';
 export { AuthTokenRepository } from './repositories/AuthTokenRepository.ts';
 export { ChannelMessageRepository } from './repositories/ChannelMessageRepository.ts';

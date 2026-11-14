@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import https from 'node:https';
 import path from 'node:path';
+import { io as connect } from 'socket.io-client';
 import { createTestCerts } from '../support/TestApp.ts';
 
 const ROOT = path.resolve(import.meta.dirname, '../../..');
@@ -39,6 +40,16 @@ test('`node server.js` boots the new Application (PORT and CERTS_DIR from env)',
   const res = await getStatus(port);
   assert.equal(res.status, 200);
   assert.equal((JSON.parse(res.body) as { status: string }).status, 'online');
+
+  // SIGTERM (systemd stop) exits 0 quickly, even with a connected socket.io client.
+  const client = connect(`https://127.0.0.1:${port}`, { transports: ['websocket'], forceNew: true, rejectUnauthorized: false, reconnection: false });
+  t.after(() => { client.close(); });
+  await new Promise<void>((resolve, reject) => { client.once('connect', resolve); client.once('connect_error', reject); });
+  const started = Date.now();
+  const exited = new Promise<number | null>((resolve) => child.once('exit', resolve));
+  child.kill('SIGTERM');
+  assert.equal(await exited, 0);
+  assert.ok(Date.now() - started < 5000, 'within the shutdown timeout');
 });
 
 test('`node server.js` with no certificates logs the legacy [SSL] line and exits 1', { timeout: 20_000 }, async (t) => {

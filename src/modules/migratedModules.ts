@@ -9,6 +9,7 @@ import { chessModule } from './chess/chessModule.ts';
 import { codeEditorModule } from './codeEditor/codeEditorModule.ts';
 import { dmModule } from './dm/dmModule.ts';
 import { speedTestModule } from './speedTest/speedTestModule.ts';
+import { sweepersModule } from './sweepers/sweepersModule.ts';
 import { voiceModule } from './voice/voiceModule.ts';
 import { watchPartyModule } from './watchParty/watchPartyModule.ts';
 import { whiteboardModule } from './whiteboard/whiteboardModule.ts';
@@ -16,7 +17,8 @@ import { whiteboardModule } from './whiteboard/whiteboardModule.ts';
 /**
  * Modules rewritten in TypeScript, each proven against the legacy handler by the golden
  * test. The Application mounts these by default; every module not listed here still runs
- * its legacy handler behind a LegacyModuleAdapter.
+ * its legacy handler behind a LegacyModuleAdapter. `sweepers` has no legacy handler (it is
+ * mounted only from here).
  */
 export const MIGRATED_MODULES: ModuleOverrides = Object.freeze({
   casino: casinoModule,
@@ -31,5 +33,6 @@ export const MIGRATED_MODULES: ModuleOverrides = Object.freeze({
   speedTest: speedTestModule,
   voice: voiceModule,
   auth: authModule,
-  admin: adminModule
+  admin: adminModule,
+  sweepers: sweepersModule
 });
