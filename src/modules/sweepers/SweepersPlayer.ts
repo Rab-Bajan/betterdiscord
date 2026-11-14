@@ -53,6 +53,11 @@ export class SweepersPlayer {
   carry = 0;
   /** Server time of the last accepted `tie_bag`. */
   lastTieAt = -Infinity;
+  /** Scale stillness (Phase E): the scale stood on (−1 none), the anchor pose, since when, and weighed already. */
+  scale = -1;
+  scaleAnchor = { x: 0, z: 0 };
+  scaleSince = 0;
+  scaleDone = false;
   /** Chunks the current socket knows. */
   interest: ChunkInterest;
   #budget: MotionBudget;

@@ -9,9 +9,12 @@ import { parsePlaceStructure } from '../../../src/modules/sweepers/payloads.ts';
 import { code, ROOM, world } from './logisticsSupport.ts';
 
 test('tables: bag tiers, structure order, rotY and the ports of every type', () => {
-  assert.deepEqual(BAG_TIERS.map((t) => [t.l, t.kg, t.cost, t.rupture, t.carry]), [[30, 20, 50, true, true], [60, 50, 150, false, true], [1000, 1000, 2500, false, false]]);
+  assert.deepEqual(BAG_TIERS.map((t) => [t.l, t.kg, t.cost, t.rupture, t.carry, t.proc]), [
+    [30, 20, 50, true, true, 0], [60, 50, 150, false, true, 0], [1000, 1000, 2500, false, false, 0], [50, 50, 0, false, true, 1], [8, 20, 0, false, true, 2]
+  ]);
   assert.deepEqual(STRUCT_TYPES.map((t) => t.key), [
-    'found2', 'found4', 'belt1', 'belt2', 'belt5', 'bendL', 'bendR', 'rampUp', 'rampDown', 'splitter', 'merger', 'hopper', 'packager', 'fence'
+    'found2', 'found4', 'belt1', 'belt2', 'belt5', 'bendL', 'bendR', 'rampUp', 'rampDown', 'splitter', 'merger', 'hopper', 'packager', 'fence',
+    'stripper', 'baler', 'magnet', 'trommel'
   ]);
   assert.deepEqual([0, 1, 2, 3].map(rotYOf), [0, -Math.PI / 2, Math.PI, Math.PI / 2]);
   // rot 1 faces +x: a belt5 at the origin feeds in from −x and out at +x.

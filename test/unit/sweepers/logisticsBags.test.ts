@@ -244,7 +244,7 @@ test('bag shop: buy at the workbench, bagStockFull at the cap; personal_update c
   w.at(office.x, office.z + 3);
   w.player.personal.cash = 1_000;
   const before = w.player.personal.bags[1] ?? 0;
-  assert.equal(w.service.buyUpgrade('s1', { channelId: ROOM, item: 'bag', tier: 1, qty: 1 }), 1_000 - (BAG_TIERS[1]?.cost ?? 0));
+  assert.equal(w.service.buyUpgrade('s1', { channelId: ROOM, item: 'bag', tier: 1, qty: 1 }).cash, 1_000 - (BAG_TIERS[1]?.cost ?? 0));
   w.events.clear();
   w.tick();
   const personal = w.events.of('personalUpdate').at(-1)?.[1] as { bags: number[] };

@@ -1,4 +1,4 @@
-// Parsers for the untrusted client payloads of the sweepers events (Phases A–D).
+// Parsers for the untrusted client payloads of the sweepers events (Phases A–E).
 import { ValidationError } from '../../core/errors/ValidationError.ts';
 import { INVALID_PAYLOAD_MESSAGE, PayloadReader } from '../../core/validation/PayloadReader.ts';
 import { isPlainObject } from '../../core/validation/isPlainObject.ts';
@@ -6,7 +6,7 @@ import { BAG_QTY, BUY_ITEMS } from './debris/shop.ts';
 import type { BuyRequest } from './debris/shop.ts';
 import { TOOL_COUNT } from './debris/tables.ts';
 import { onLattice } from './logistics/placement.ts';
-import { BAG_TIERS, CRANE, STRUCT_TYPE_COUNT, structSpec, THROW_MAX_POWER } from './logistics/tables.ts';
+import { CRANE, MACHINES, STOCK_TIERS, STRUCT_TYPE_COUNT, structSpec, THROW_MAX_POWER } from './logistics/tables.ts';
 import { PLAYER_ANIM_STATES } from './types.ts';
 import type { PlayerAnimState } from './types.ts';
 
@@ -122,7 +122,10 @@ export function parsePlayerAction(payload: unknown): PlayerAction {
   return { channelId, kind };
 }
 
-/** Parses `{ channelId, item, tier?, level?, qty? }`: `tier` is required for tool (1..6), repair (1..3) and bag (0..2), `level` for width, pack and hard; bag `qty` is 1, 5 or 10 (default 1). */
+/**
+ * Parses `{ channelId, item, tier?, level?, qty? }`: `tier` is required for tool (1..6), repair (1..3), bag (0..2),
+ * blueprint (0..3) and license (1..5), `level` for width, pack and hard; bag `qty` is 1, 5 or 10 (default 1).
+ */
 export function parseBuyUpgrade(payload: unknown): BuyRequest {
   const reader = PayloadReader.strict(payload);
   const channelId = reader.requireString('channelId', CHANNEL_ID);
@@ -132,8 +135,10 @@ export function parseBuyUpgrade(payload: unknown): BuyRequest {
   if (item === 'width' || item === 'pack' || item === 'hard') return { channelId, item, level: reader.requireInt('level', { min: 1, max: 10 }) };
   if (item === 'bag') {
     const qty = reader.has('qty') ? reader.requireEnum('qty', BAG_QTY) : 1;
-    return { channelId, item, tier: reader.requireInt('tier', { min: 0, max: BAG_TIERS.length - 1 }), qty };
+    return { channelId, item, tier: reader.requireInt('tier', { min: 0, max: STOCK_TIERS - 1 }), qty };
   }
+  if (item === 'blueprint') return { channelId, item, tier: reader.requireInt('tier', { min: 0, max: MACHINES.length - 1 }) };
+  if (item === 'license') return { channelId, item, tier: reader.requireInt('tier', { min: 1, max: 5 }) };
   return { channelId, item };
 }
 
@@ -167,9 +172,11 @@ export type LogisticsAction =
   | { channelId: string; kind: 'throw'; power: number; pitch: number; rotY: number }
   | { channelId: string; kind: 'clearJam'; id: number }
   | { channelId: string; kind: 'crane'; bag: number; to: number }
-  | { channelId: string; kind: 'telemetry'; on: boolean };
+  | { channelId: string; kind: 'telemetry'; on: boolean }
+  | { channelId: string; kind: 'grease'; id: number; point: number }
+  | { channelId: string; kind: 'generator'; on: boolean };
 
-export const LOGISTICS_ACTION_KINDS = Object.freeze(['pickup', 'throw', 'clearJam', 'crane', 'telemetry'] as const);
+export const LOGISTICS_ACTION_KINDS = Object.freeze(['pickup', 'throw', 'clearJam', 'crane', 'telemetry', 'grease', 'generator'] as const);
 const MAX_UINT16 = 0xffff;
 
 function inRange(payload: Record<string, unknown>, key: string, min: number, max: number): number {
@@ -188,10 +195,10 @@ export function parseChannel(payload: unknown): string {
 /** Parses `{ channelId, tier: 0..2 }`. */
 export function parseTieBag(payload: unknown): TieBag {
   const reader = PayloadReader.strict(payload);
-  return { channelId: reader.requireString('channelId', CHANNEL_ID), tier: reader.requireInt('tier', { min: 0, max: BAG_TIERS.length - 1 }) };
+  return { channelId: reader.requireString('channelId', CHANNEL_ID), tier: reader.requireInt('tier', { min: 0, max: STOCK_TIERS - 1 }) };
 }
 
-/** Parses `{ channelId, type: 0..13, x, z, rot: 0..3, lvl: 0..2 }`: x and z on the 0.5 m lattice within ±256, lvl valid for the type. */
+/** Parses `{ channelId, type: 0..17, x, z, rot: 0..3, lvl: 0..2 }`: x and z on the 0.5 m lattice within ±256, lvl valid for the type. */
 export function parsePlaceStructure(payload: unknown): PlaceStructure {
   const reader = PayloadReader.strict(payload);
   const fields = isPlainObject(payload) ? payload : {};
@@ -214,7 +221,7 @@ export function parseDeleteStructure(payload: unknown): DeleteStructure {
   return { channelId: reader.requireString('channelId', CHANNEL_ID), id: reader.requireInt('id', { min: 0, max: MAX_UINT16 }) };
 }
 
-/** Parses a `miskolc:logistics_action` (pickup, throw, clearJam, crane, telemetry). */
+/** Parses a `miskolc:logistics_action` (pickup, throw, clearJam, crane, telemetry; Phase E grease, generator). */
 export function parseLogisticsAction(payload: unknown): LogisticsAction {
   const reader = PayloadReader.strict(payload);
   const fields = isPlainObject(payload) ? payload : {};
@@ -230,10 +237,13 @@ export function parseLogisticsAction(payload: unknown): LogisticsAction {
       };
     case 'crane':
       return { channelId, kind, bag: reader.requireInt('bag', { min: 0, max: MAX_UINT16 }), to: reader.requireInt('to', { min: 0, max: CRANE.targets.length - 1 }) };
-    case 'telemetry': {
+    case 'telemetry':
+    case 'generator': {
       const on = reader.optionalBoolean('on');
       if (on === undefined) throw new ValidationError(INVALID_PAYLOAD_MESSAGE, { field: 'on', reason: 'missing', message: '"on" is required.' });
       return { channelId, kind, on };
     }
+    case 'grease':
+      return { channelId, kind, id: reader.requireInt('id', { min: 0, max: MAX_UINT16 }), point: reader.requireInt('point', { min: 0, max: 3 }) };
   }
 }

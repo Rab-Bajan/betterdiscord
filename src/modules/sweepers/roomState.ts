@@ -1,6 +1,7 @@
 // `miskolc_rooms.state_json`: the room-level world state (format v4). A v1 row (Phase A stored only
 // `{ "v": 1 }`) or any missing / corrupt field loads as the fresh default; a v2 row has no debris, and a
-// row before v4 has no logistics network (it loads empty).
+// row before v4 has no logistics network (it loads empty). Phase E adds the optional `economy` key
+// without a version bump (a v5 would make D's parser drop debris and logistics on a rollback).
 import { DAY_MS, FRESH_CLOCK } from './dayClock.ts';
 import type { ClockReading } from './dayClock.ts';
 import { isPlainObject } from '../../core/validation/isPlainObject.ts';
@@ -22,6 +23,8 @@ export interface RoomWorldRecord {
   debris: unknown;
   /** v4 `logistics` as stored (validated by `restoreLogistics`); null before v4 (empty network). */
   logistics: unknown;
+  /** Phase E `economy` as stored, any version (parsed per field by `Economy.restore`); null when absent. */
+  economy: unknown;
 }
 
 const isFiniteNumber = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
@@ -69,7 +72,8 @@ export function parseRoomState(state: Record<string, unknown>, roomId: string): 
     clock,
     weather: boundedWeather(parseWeather(state['weather'], roomId), clock, roomId),
     debris,
-    logistics
+    logistics,
+    economy: state['economy'] ?? null
   };
 }
 

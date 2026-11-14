@@ -118,8 +118,8 @@ test('v3 → v4: a v3 row loads with an empty network and saves as v4; orphan ca
   o.service.dispose();
 });
 
-test('stats_json v3: bags parsed per field (clamped, default plus the one-time starter kit), round trip', () => {
-  assert.equal(STATS_JSON_VERSION, 3);
+test('stats_json v3/v4: bags parsed per field (clamped, default plus the one-time starter kit), round trip', () => {
+  assert.equal(STATS_JSON_VERSION, 4);
   const fresh = parsePersonal({ ...NEW_PLAYER_STATS }, {}, 0);
   assert.deepEqual(fresh.data.bags, [...STARTER_BAGS]);
   assert.equal(fresh.granted, true);

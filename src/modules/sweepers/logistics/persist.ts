@@ -8,7 +8,9 @@ import type { WorldStructureRecord } from '../SweepersRepository.ts';
 import type { LogisticsWorld } from './LogisticsWorld.ts';
 import { checkPlacement, exceededCap } from './placement.ts';
 import type { PlacementWorld } from './placement.ts';
-import { BAG_TIERS, LANDMARK_HOPPER, rotYOf, STRUCT_TYPES, structSpec, TINTS, TYPE } from './tables.ts';
+import {
+  BAG_TIERS, FLAG_JAM, FLAG_SMOKE, GREASE_ALL, GREASE_SHIFT, isJunction, LANDMARK_HOPPER, MAINT_KG, processorOf, rotYOf, STRUCT_TYPES, structSpec, TINTS, TYPE
+} from './tables.ts';
 
 /** `[dustG, seedG, cans, crushed, ironG, copperG, jackpots[]]`. */
 export type LoadC = [number, number, number, number, number, number, number[]];
@@ -43,7 +45,7 @@ export function structureRecords(world: LogisticsWorld, roomId: string): WorldSt
     y: st.base,
     z: st.z,
     rotY: rotYOf(st.rot),
-    config: { v: 1, rot: st.rot, lvl: st.lvl, jam: (st.flags & 1) !== 0 }
+    config: { v: 1, rot: st.rot, lvl: st.lvl, jam: (st.flags & FLAG_JAM) !== 0, wear: Math.round(st.wear * 1000) / 1000, grease: (st.flags >> GREASE_SHIFT) & GREASE_ALL }
   }));
 }
 
@@ -64,6 +66,8 @@ interface ParsedStructure {
   rot: number;
   lvl: number;
   jam: boolean;
+  wear: number;
+  grease: number;
 }
 
 function parseStructure(record: WorldStructureRecord, roomId: string): ParsedStructure | null {
@@ -83,7 +87,13 @@ function parseStructure(record: WorldStructureRecord, roomId: string): ParsedStr
   const spec = structSpec(type);
   const lvl = config['lvl'] ?? 0;
   if (!isUint(lvl, 2) || lvl < spec.lvlMin || lvl > spec.lvlMax) return null;
-  return { n, type, x: record.x, z: record.z, rot, lvl, jam: config['jam'] === true };
+  const wear = config['wear'];
+  const grease = config['grease'];
+  return {
+    n, type, x: record.x, z: record.z, rot, lvl, jam: config['jam'] === true,
+    wear: typeof wear === 'number' && Number.isFinite(wear) ? Math.min(100_000, Math.max(0, wear)) : 0,
+    grease: isUint(grease, GREASE_ALL) ? grease : 0
+  };
 }
 
 /**
@@ -114,8 +124,11 @@ export function loadStructures(world: LogisticsWorld, placement: Omit<PlacementW
     }
     try {
       const base = checkPlacement({ ...placement, structures: [...world.structures.values()], groundBags: [], players: [] }, spec, null, false);
-      const jammable = row.type === TYPE.splitter || row.type === TYPE.merger || row.type === TYPE.packager;
-      world.add(spec, base, row.n, row.jam && jammable ? 1 : 0);
+      const wears = processorOf(row.type)?.wears === true;
+      const wear = wears ? row.wear : 0;
+      const flags = (row.jam && isJunction(row.type) ? FLAG_JAM : 0) | (wear >= MAINT_KG ? FLAG_SMOKE | (row.grease << GREASE_SHIFT) : 0);
+      const st = world.add(spec, base, row.n, flags);
+      if (st) st.wear = wear;
     } catch (err) {
       warnings.push(`structure ${row.n} rejected: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -142,7 +155,7 @@ export function encodeLogistics(world: LogisticsWorld, carrierFeet: (playerId: n
     const buffer = world.bufferOf(id);
     if (!buffer) continue;
     const timers = world.timersOf(id);
-    if (world.nodes.get(id)?.type === TYPE.packager) packagers.push([id, encodeLoad(buffer), Math.round(timers.timer), Math.round(timers.idleMs)]);
+    if (world.nodes.get(id)?.type !== TYPE.hopper) packagers.push([id, encodeLoad(buffer), Math.round(timers.timer), Math.round(timers.idleMs)]);
     else hoppers.push([id, encodeLoad(buffer)]);
   }
   const job = world.craneJob;
@@ -173,7 +186,7 @@ export function restoreLogistics(world: LogisticsWorld, value: unknown): string[
     const ok = Array.isArray(row) && row.length === 4 && isUint(row[0], 0xffff) && isUint(row[2], 1e7) && isUint(row[3], 1e7);
     const load = ok ? parseLoadC(row[1]) : null;
     if (!ok || !load) warnings.push('packager row dropped');
-    else if (world.nodes.get(Number(row[0]))?.type !== TYPE.packager) orphan(load, 'packager');
+    else if (!processorOf(world.nodes.get(Number(row[0]))?.type ?? -1)) orphan(load, 'packager');
     else world.restoreBuffer(Number(row[0]), load, Number(row[2]), Number(row[3]));
   }
   for (const row of list('cargo')) {

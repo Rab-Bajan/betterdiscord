@@ -13,8 +13,10 @@ export interface Structure {
   rot: number;
   lvl: number;
   base: number;
-  /** Bit 0 jammed, bit 1 packager busy. */
+  /** Bit 0 jammed, 1 busy, 2 smoking, 3–6 grease mask (Phase E). */
   flags: number;
+  /** Kg processed since the last service (stripper / baler, 89). */
+  wear: number;
   rect: Rect;
 }
 
@@ -141,6 +143,13 @@ export function localPathPoint(type: number, s: number, way: number): { x: numbe
     case 'merger':
       if (s <= 0.5) return { x: way === 1 ? 0.5 - s : -0.5 + s, z: 0, t };
       return { x: 0, z: -(s - 0.5), t };
+    case 'magnet':
+    case 'trommel': {
+      // In to the centre, then straight on, or (route 1) out of the side, reaching x = w/2 at s = len.
+      const half = spec.d / 2;
+      if (s <= half) return { x: 0, z: half - s, t };
+      return way === 1 ? { x: ((s - half) * (spec.w / 2)) / half, z: 0, t } : { x: 0, z: -(s - half), t };
+    }
     default:
       return { x: 0, z: spec.d / 2 - t * spec.d, t };
   }

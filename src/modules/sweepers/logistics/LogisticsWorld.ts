@@ -16,12 +16,14 @@ import {
 } from './shapes.ts';
 import type { Rect, Structure, WorldPort } from './shapes.ts';
 import {
-  bagTier, BELT_MPS, BIG_BAG, BIG_BAG_FILL_M, CAPS, CARGO_PITCH_M, CRANE, DROP_POWER, FENCE_STOP_M,
-  GRAVITY, groupKg, GROUP_BULK, GROUP_COPPER, GROUP_FERROUS, HOPPER_BAG_QUEUE, HOPPER_EMIT_MS, HOPPER_INTAKE_TOP_M, HOPPER_KG,
-  isBeltLike, isFoundation, isJunction, JAM_MS, jackpotGroup, LANDMARK_HOPPER, LANDMARK_INTAKE_PAD_M, LANDMARK_INTAKE_TOP_M, LOT_KG,
-  PACKAGER_BAG_KG, PACKAGER_CYCLE_MS, PACKAGER_FLUSH_MS, PACKAGER_KG, RUPTURE_CHANCE, RUPTURE_FALL_M, RUPTURE_SHARP_KG, sharpKg,
-  STACK_MAX, STACK_SLIDE_M, structSpec, THROW_MAX_STEPS, THROW_STEP_S, TYPE, VALUE_FT_PER_KG, WATTS_PER_M, deckOffset
+  bagTier, BELT_MPS, BIG_BAG, BIG_BAG_FILL_M, CAPS, CARGO_PITCH_M, COIN_CHANCE, COINS, CRANE, DROP_POWER, FENCE_STOP_M, FLAG_BUSY, FLAG_JAM,
+  FLAG_SMOKE, GRAVITY, GREASE_ALL, GREASE_SHIFT, groupKg, GROUP_BULK, GROUP_COPPER, GROUP_FERROUS, HOPPER_BAG_QUEUE, HOPPER_EMIT_MS,
+  HOPPER_INTAKE_TOP_M, HOPPER_KG, isBeltLike, isFoundation, isJunction, isMachine, isRouted, JAM_MS, jackpotGroup, LANDMARK_HOPPER,
+  LANDMARK_INTAKE_PAD_M, LANDMARK_INTAKE_TOP_M, LOT_KG, machineOf, MAINT_KG, processorOf, RUPTURE_CHANCE, RUPTURE_FALL_M,
+  RUPTURE_SHARP_KG, sharpKg, SMOKE_RATE, STACK_MAX, STACK_SLIDE_M, structSpec, THROW_MAX_STEPS, THROW_STEP_S, TYPE, VALUE_FT_PER_KG,
+  WATTS_PER_M, deckOffset
 } from './tables.ts';
+import type { ProcessorSpec } from './tables.ts';
 
 /** `[id, type, xCm, zCm, baseYCm, rot, lvl, flags]`. */
 export type StructRow = [number, number, number, number, number, number, number, number];
@@ -34,6 +36,8 @@ export type ArcRow = [number, number, number, number, number, number, number, nu
 export type BurstRow = [number, number, number];
 /** `[nodeId, kgDg]`. */
 export type FillRow = [number, number];
+/** A trommel coin (80): `[nodeId, ft]`. */
+export type CoinRow = [number, number];
 
 export interface CraneJob {
   bag: number;
@@ -118,6 +122,9 @@ export interface Cargo {
   bag: Bag | null;
   /** Tick stamp of the last move: a cargo moves at most once per tick. */
   tick: number;
+  /** Set once a trommel screened this lot, so trommels in series or a loop never roll coins for it again.
+   * shortcut: not persisted, so a lot can be screened once more after a reload; persist it if coin farming via restarts shows up. */
+  screened?: true;
 }
 
 type Target = { kind: 'node'; node: number; entry: number } | { kind: 'hopper'; node: number } | { kind: 'open' };
@@ -192,8 +199,8 @@ export function addLoad(to: Load, from: Load): void {
 const cloneLoad = (load: Load): Load => ({ ...load, jackpots: [...load.jackpots] });
 const jackpotKg = (kind: number): number => jackpotOf(kind)?.kg ?? 0;
 
-/** Moves one group's fields of `from` into a fresh load. */
-function takeGroup(from: Load, group: number): Load {
+/** Moves one group's fields of `from` into a fresh load (with that group's jackpots unless `jackpots` is false). */
+function takeGroup(from: Load, group: number, jackpots = true): Load {
   const part = emptyLoad();
   if (group === GROUP_BULK) {
     part.dustG = from.dustG;
@@ -211,9 +218,23 @@ function takeGroup(from: Load, group: number): Load {
     part.copperG = from.copperG;
     from.copperG = 0;
   }
+  if (!jackpots) return part;
   part.jackpots = from.jackpots.filter((k) => jackpotGroup(k) === group);
   from.jackpots = from.jackpots.filter((k) => jackpotGroup(k) !== group);
   return part;
+}
+
+/** Kg of a lot a buffer machine takes (E.2): all of it, or one group's non-jackpot fields. */
+function absorbKg(load: Load, proc: ProcessorSpec): number {
+  return proc.absorbs === 'all' ? loadKg(load) : groupKg({ ...load, jackpots: [] }, proc.absorbs, jackpotKg);
+}
+
+/** Moves what a buffer machine takes out of `load`. */
+function absorb(load: Load, proc: ProcessorSpec): Load {
+  if (proc.absorbs !== 'all') return takeGroup(load, proc.absorbs, false);
+  const all = cloneLoad(load);
+  Object.assign(load, emptyLoad());
+  return all;
 }
 
 /** Cuts up to `maxKg` from `from` into a new load; a single jackpot heavier than that moves alone. */
@@ -242,8 +263,16 @@ export function loadValue(load: Load): number {
     + (load.ironG / 1000) * v.iron + (load.copperG / 1000) * v.copper + jackpots;
 }
 
-/** Lot group of a cargo entering a splitter: 2 → left (1), 1 → right (2), 0 and bags → straight (0). */
-const routeOf = (c: Cargo): number => (c.kind === 1 ? 0 : c.sub === GROUP_COPPER ? 1 : c.sub === GROUP_FERROUS ? 2 : 0);
+/**
+ * Out port of a cargo entering a routed node: splitter 2 → left (1), 1 → right (2); magnet ferrous lot →
+ * side (1); trommel bulk lot → side (1); everything else (and every bag) straight (0).
+ */
+function routeOf(c: Cargo, type: number): number {
+  if (c.kind === 1) return 0;
+  if (type === TYPE.magnet) return c.sub === GROUP_FERROUS ? 1 : 0;
+  if (type === TYPE.trommel) return c.sub === GROUP_BULK ? 1 : 0;
+  return c.sub === GROUP_COPPER ? 1 : c.sub === GROUP_FERROUS ? 2 : 0;
+}
 
 /** Lowest free id 1..65535 of a map, or null. */
 function lowestFree(used: { has(id: number): boolean }): number | null {
@@ -276,6 +305,7 @@ export class LogisticsWorld {
   readonly #fillSent = new Map<number, number>();
   #structuresDirty = false;
   #changed = true;
+  #coins: CoinRow[] = [];
 
   constructor(deps: LogisticsDeps) {
     this.#deps = deps;
@@ -328,13 +358,13 @@ export class LogisticsWorld {
   add(spec: PlaceSpec, base: number, id: number | null = null, flags = 0): Structure | null {
     const sid = id ?? lowestFree(this.structures);
     if (sid === null || sid === LANDMARK_HOPPER) return null;
-    const st: Structure = { id: sid, type: spec.type, x: spec.x, z: spec.z, rot: spec.rot, lvl: spec.lvl, base, flags, rect: footprint(spec.type, spec.x, spec.z, spec.rot) };
+    const st: Structure = { id: sid, type: spec.type, x: spec.x, z: spec.z, rot: spec.rot, lvl: spec.lvl, base, flags, wear: 0, rect: footprint(spec.type, spec.x, spec.z, spec.rot) };
     this.structures.set(sid, st);
     const type = structSpec(st.type);
     if (type.ins.length > 0 || type.outs.length > 0) {
       const node: LogNode = {
         id: sid, type: st.type, st, len: type.len, queue: [], ins: type.ins.map((p) => worldPort(st, p)), outs: type.outs.map((p) => worldPort(st, p)),
-        targets: [], buffer: st.type === TYPE.hopper || st.type === TYPE.packager ? emptyLoad() : null, timer: 0, idleMs: 0, rr: 0, lastIn: 1,
+        targets: [], buffer: st.type === TYPE.hopper || processorOf(st.type) ? emptyLoad() : null, timer: 0, idleMs: 0, rr: 0, lastIn: 1,
         intake: st.type === TYPE.hopper ? st.rect : null, intakeTop: HOPPER_INTAKE_TOP_M
       };
       this.nodes.set(sid, node);
@@ -455,23 +485,29 @@ export class LogisticsWorld {
     if (flags === st.flags) return;
     st.flags = flags;
     this.#structChanged.add(st.id);
-    if (bit === 1) this.#structuresDirty = true;
+    if (bit !== FLAG_BUSY) this.#structuresDirty = true;
   }
 
   // ---- the simulation ----
 
-  /** One tick of `dtMs` (already clamped by the room): belts, hoppers, packagers, jams, crane. */
-  tick(dtMs: number, now: number): void {
+  /**
+   * One tick of `dtMs` (already clamped by the room): belts, hoppers, buffer machines, jams, crane.
+   * `pf` (E.2 power factor) scales every network timer, including `waitMs`; the crane is not on the grid.
+   */
+  tick(dtMs: number, now: number, pf = 1): void {
     this.#tick++;
     this.#timeMs += dtMs;
     this.#advanceFlow();
+    const work = dtMs * pf;
     const ids = [...this.nodes.keys()].sort((a, b) => a - b);
     for (const id of ids) {
       const node = this.nodes.get(id);
       if (!node) continue;
-      if (node.type === TYPE.hopper) this.#tickHopper(node, dtMs);
-      else this.#moveQueue(node, dtMs);
-      if (node.type === TYPE.packager) this.#tickPackager(node, dtMs);
+      if (node.type === TYPE.hopper) this.#tickHopper(node, work);
+      else this.#moveQueue(node, work);
+      const proc = processorOf(node.type);
+      if (proc) this.#tickProcessor(node, proc, work);
+      else if (node.st && isMachine(node.type)) this.#setFlag(node.st, FLAG_BUSY, node.queue.length > 0);
     }
     this.#detectJams();
     const job = this.#crane.job;
@@ -522,7 +558,7 @@ export class LogisticsWorld {
 
   /** The head at the end of `node` leaves through the out port of its route; false when it must wait. */
   #exit(node: LogNode, c: Cargo): boolean {
-    const outIndex = node.type === TYPE.splitter ? c.route : 0;
+    const outIndex = isRouted(node.type) ? c.route : 0;
     const target = node.targets[outIndex] ?? { kind: 'open' };
     const port = node.outs[outIndex];
     if (!port) return false;
@@ -552,10 +588,18 @@ export class LogisticsWorld {
     return true;
   }
 
-  /** True when `into` takes `c` at `entry` now (free entry, not jammed, merger alternation, packager buffer). */
+  /** True when `into` takes `c` at `entry` now (free entry, not jammed, merger alternation, machine buffer). */
   #accepts(into: LogNode, entry: number, fromId: number, c: Cargo): boolean {
-    if (into.st && (into.st.flags & 1) !== 0) return false;
-    if (into.type === TYPE.packager && c.kind === 0) return (into.buffer ? loadKg(into.buffer) : 0) + loadKg(c.load) <= PACKAGER_KG + EPS;
+    if (into.st && (into.st.flags & FLAG_JAM) !== 0) return false;
+    const proc = processorOf(into.type);
+    if (proc && c.kind === 0) {
+      const kg = absorbKg(c.load, proc);
+      if (kg > EPS) {
+        if ((into.buffer ? loadKg(into.buffer) : 0) + kg > proc.bufKg + EPS) return false;
+        // Fully absorbed: no room on the deck needed.
+        if (proc.absorbs === 'all' || (loadKg(c.load) - kg <= EPS && c.load.jackpots.length === 0)) return true;
+      }
+    }
     if (into.queue.some((q) => q.s < CARGO_PITCH_M)) return false;
     if (into.type === TYPE.merger && into.lastIn === entry && this.#mergerWaiting(into, 1 - entry, fromId)) return false;
     return true;
@@ -566,7 +610,7 @@ export class LogisticsWorld {
     for (const n of this.nodes.values()) {
       if (n.id === exceptId) continue;
       const feeds = n.targets.some((t, i) => t.kind === 'node' && t.node === merger.id && t.entry === entry
-        && (n.type !== TYPE.splitter || n.queue[0]?.route === i));
+        && (!isRouted(n.type) || n.queue[0]?.route === i));
       if (!feeds) continue;
       const head = n.queue[0];
       if (head && head.s >= n.len - EPS) return true;
@@ -575,18 +619,26 @@ export class LogisticsWorld {
   }
 
   #enter(into: LogNode, entry: number, c: Cargo): void {
-    if (into.type === TYPE.packager && c.kind === 0 && into.buffer) {
-      addLoad(into.buffer, c.load);
+    const proc = processorOf(into.type);
+    if (proc && c.kind === 0 && into.buffer && absorbKg(c.load, proc) > EPS) {
+      addLoad(into.buffer, absorb(c.load, proc));
       into.idleMs = 0;
-      this.cargo.delete(c.id);
-      this.#gone(c.id);
-      return;
+      if (isEmptyLoad(c.load)) {
+        this.cargo.delete(c.id);
+        this.#gone(c.id);
+        return;
+      }
     }
     if (into.type === TYPE.merger) into.lastIn = entry;
     c.node = into.id;
     c.s = 0;
     c.way = into.type === TYPE.merger ? entry : 0;
-    c.route = into.type === TYPE.splitter ? routeOf(c) : 0;
+    c.route = isRouted(into.type) ? routeOf(c, into.type) : 0;
+    if (isRouted(into.type)) c.way = c.route;
+    if (into.type === TYPE.trommel && c.route === 1 && !c.screened) {
+      c.screened = true;
+      this.#screen(into);
+    }
     c.tick = this.#tick;
     c.waitMs = 0;
     c.mv = 1;
@@ -658,37 +710,98 @@ export class LogisticsWorld {
     }
   }
 
-  #tickPackager(pk: LogNode, dtMs: number): void {
+  /** A buffer machine (packager, stripper, baler): timer (× 0.5 while smoking), batch emission, idle flush, wear. */
+  #tickProcessor(pk: LogNode, proc: ProcessorSpec, work: number): void {
     const st = pk.st;
-    if (!st || !pk.buffer || (st.flags & 1) !== 0) return;
-    pk.timer = Math.min(PACKAGER_CYCLE_MS, pk.timer + dtMs);
+    if (!st || !pk.buffer || (st.flags & FLAG_JAM) !== 0) return;
+    const rate = (st.flags & FLAG_SMOKE) !== 0 ? SMOKE_RATE : 1;
+    pk.timer = Math.min(proc.cycleMs, pk.timer + work * rate);
     const kg = loadKg(pk.buffer);
-    pk.idleMs = kg > EPS ? pk.idleMs + dtMs : 0;
-    const full = kg >= PACKAGER_BAG_KG - EPS && pk.timer >= PACKAGER_CYCLE_MS;
-    const flush = kg > EPS && kg < PACKAGER_BAG_KG - EPS && pk.idleMs >= PACKAGER_FLUSH_MS;
+    pk.idleMs = kg > EPS ? pk.idleMs + work : 0;
+    const full = kg >= proc.batchKg - EPS && pk.timer >= proc.cycleMs;
+    const flush = proc.flushMs !== null && kg > EPS && kg < proc.batchKg - EPS && pk.idleMs >= proc.flushMs;
     if ((full || flush) && this.bags.size < CAPS.bags && !pk.queue.some((q) => Math.abs(q.s - 1) < CARGO_PITCH_M)) {
       const id = lowestFree(this.#entityIds());
       if (id !== null) {
-        const tint = dominantGroup(pk.buffer) + 1;
-        const load = cut(pk.buffer, PACKAGER_BAG_KG, bagTier(1).l);
-        const bag: Bag = { id, tier: 1, tint, st: 3, x: 0, y: 0, z: 0, rot8: 0, load, on: 0, carrier: 0 };
+        const tint = proc.tint ?? dominantGroup(pk.buffer) + 1;
+        const load = cut(pk.buffer, proc.batchKg, proc.litres);
+        const tier = proc.outTier;
+        const bag: Bag = { id, tier, tint, st: 3, x: 0, y: 0, z: 0, rot8: 0, load, on: 0, carrier: 0 };
         this.bags.set(id, bag);
-        const c: Cargo = { id, kind: 1, sub: 1, tint, node: pk.id, s: 1, route: 0, way: 0, mv: 1, waitMs: 0, load: emptyLoad(), bag, tick: this.#tick };
+        const c: Cargo = { id, kind: 1, sub: tier, tint, node: pk.id, s: 1, route: 0, way: 0, mv: 1, waitMs: 0, load: emptyLoad(), bag, tick: this.#tick };
         this.cargo.set(id, c);
         pk.queue.push(c);
         pk.queue.sort((a, b) => b.s - a.s);
         this.#cargoRow(c);
         pk.timer = 0;
         pk.idleMs = 0;
+        if (proc.wears) {
+          st.wear += loadKg(load);
+          this.#structuresDirty = true;
+          if (st.wear >= MAINT_KG - EPS) this.#setFlag(st, FLAG_SMOKE, true);
+        }
       }
     }
-    this.#setFlag(st, 2, !isEmptyLoad(pk.buffer));
+    this.#setFlag(st, FLAG_BUSY, proc.type === TYPE.packager ? !isEmptyLoad(pk.buffer) : this.#active(pk, proc));
+  }
+
+  /** E.2 "active": holds cargo, or the buffer holds a batch (the stripper: anything, during its idle-flush wait). */
+  #active(node: LogNode, proc: ProcessorSpec | undefined): boolean {
+    if (node.queue.length > 0) return true;
+    if (!proc || !node.buffer) return false;
+    const kg = loadKg(node.buffer);
+    return kg >= proc.batchKg - EPS || (proc.flushMs !== null && kg > EPS);
+  }
+
+  /** Watts drawn by the active machines (types 14–17). */
+  machineDemandW(): number {
+    let w = 0;
+    for (const node of this.nodes.values()) {
+      const spec = machineOf(node.type);
+      if (spec && isMachine(node.type) && this.#active(node, processorOf(node.type))) w += spec.kW * 1000;
+    }
+    return w;
+  }
+
+  /** A bulk lot screened by a trommel finds a coin with 25 % (80). */
+  #screen(node: LogNode): void {
+    if (!this.#deps.chance(COIN_CHANCE)) return;
+    let roll = 1;
+    for (const coin of COINS) {
+      if (coin === COINS[COINS.length - 1] || this.#deps.chance(coin.p / roll)) {
+        this.#coins.push([node.id, coin.ft]);
+        return;
+      }
+      roll -= coin.p;
+    }
+  }
+
+  /** The coins found since the last call. */
+  takeCoins(): CoinRow[] {
+    const coins = this.#coins;
+    this.#coins = [];
+    return coins;
+  }
+
+  /** Greases service point `point` of a smoking machine (the caller checked the rules); all 4 reset the wear. */
+  grease(st: Structure, point: number): { mask: number; done: boolean } {
+    const mask = ((st.flags >> GREASE_SHIFT) & GREASE_ALL) | (1 << point);
+    const done = mask === GREASE_ALL;
+    st.flags = (st.flags & ~(GREASE_ALL << GREASE_SHIFT)) | (done ? 0 : mask << GREASE_SHIFT);
+    if (done) {
+      st.wear = 0;
+      st.flags &= ~FLAG_SMOKE;
+    }
+    this.#structChanged.add(st.id);
+    this.#structuresDirty = true;
+    this.#changed = true;
+    return { mask, done };
   }
 
   #detectJams(): void {
     for (const node of this.nodes.values()) {
       const st = node.st;
-      if (!st || !isJunction(st.type) || (st.flags & 1) !== 0) continue;
+      if (!st || !isJunction(st.type) || (st.flags & FLAG_JAM) !== 0) continue;
       const inside = node.queue.some((c) => c.waitMs >= JAM_MS);
       const feeding = !inside && [...this.nodes.values()].some((n) => n.targets.some((t) => t.kind === 'node' && t.node === node.id)
         && (n.queue[0]?.waitMs ?? 0) >= JAM_MS && (n.queue[0]?.s ?? 0) >= n.len - EPS);
@@ -945,7 +1058,7 @@ export class LogisticsWorld {
         const free = (belt.st.flags & 1) === 0 && belt.queue.every((q) => Math.abs(q.s - s) >= CARGO_PITCH_M);
         if (free) {
           const c: Cargo = { id: bag.id, kind: 1, sub: bag.tier, tint: bag.tint, node: belt.id, s, route: 0, way: 0, mv: 0, waitMs: 0, load: emptyLoad(), bag, tick: this.#tick };
-          if (belt.type === TYPE.splitter) c.route = routeOf(c);
+          if (belt.type === TYPE.splitter) c.route = routeOf(c, belt.type);
           bag.st = 3;
           bag.on = 0;
           belt.queue.push(c);
@@ -1012,23 +1125,22 @@ export class LogisticsWorld {
 
   /** A ground bag leaves its spot: the bags resting on it settle without it. */
   #unstack(bag: Bag): void {
-    const id = bag.id;
     bag.on = 0;
-    this.#settleOn(id, bag);
+    // Not a support while the stack above it settles; all callers set the final state right after.
+    bag.st = 2;
+    this.#settleOn(bag.id);
   }
 
   /** Bags that rested on `id` settle (rupture rule), recursively. */
-  #settleOn(id: number, removed: Bag | null = null): void {
+  #settleOn(id: number): void {
     const above = [...this.bags.values()].filter((b) => b.st === 0 && b.on === id).sort((a, b) => a.y - b.y);
     for (const b of above) {
       const oldY = b.y;
-      if (removed) removed.st = 2;
       const sup = this.support(b.x, b.z, b, oldY);
-      if (removed) removed.st = 0;
       if (sup.y >= oldY - EPS && sup.on?.id === b.on) continue;
       const myId = b.id;
       this.#rest(b, b.x, sup.y, b.z, sup.on, oldY, oldY, true);
-      if (this.bags.has(myId)) this.#settleOn(myId, removed);
+      if (this.bags.has(myId)) this.#settleOn(myId);
     }
   }
 
@@ -1051,6 +1163,15 @@ export class LogisticsWorld {
       return this.nodes.get(st.id) ?? null;
     }
     return null;
+  }
+
+  /** Removes a ground or carried bag from the world (weighed, E.2); bags resting on it settle. */
+  takeBag(bag: Bag): void {
+    if (bag.st === 3 || bag.st === 2) return;
+    if (bag.st === 0) this.#unstack(bag);
+    this.bags.delete(bag.id);
+    this.#gone(bag.id);
+    this.#changed = true;
   }
 
   /** Drops a carried bag at a pose (the carrier left for good). */
@@ -1355,7 +1476,8 @@ export class LogisticsWorld {
     const bag: Bag | null = row.kind === 1 ? { id: row.id, tier: row.sub, tint: row.tint, st: 3, x: 0, y: 0, z: 0, rot8: 0, load: row.load, on: 0, carrier: 0 } : null;
     const atHopper = node.type === TYPE.hopper;
     const c: Cargo = {
-      id: row.id, kind: row.kind, sub: row.sub, tint: row.tint, node: node.id, s: atHopper ? 0 : row.s, route: node.type === TYPE.splitter ? row.route : 0,
+      id: row.id, kind: row.kind, sub: row.sub, tint: row.tint, node: node.id, s: atHopper ? 0 : row.s,
+      route: isRouted(node.type) ? Math.min(row.route, node.outs.length - 1) : 0,
       way: 0, mv: 0, waitMs: atHopper ? 0 : row.waitMs, load: bag ? emptyLoad() : row.load, bag, tick: 0
     };
     if (bag) this.bags.set(bag.id, bag);

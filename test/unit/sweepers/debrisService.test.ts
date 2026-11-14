@@ -221,7 +221,7 @@ test('shop: location, level, ownership, cash, refreshments and the repair price'
   const office = cityLayout().landmarks.office;
   player.pose = { ...player.pose, x: office.x, z: office.z - 3 };
   assert.equal(buy({ channelId: ROOM, item: 'tool', tier: 2 }), REFUSED('Nincs elég pénzed: 6 000 Ft kell.'));
-  assert.equal(service.buyUpgrade('s1', { channelId: ROOM, item: 'tool', tier: 1 }), 500);
+  assert.equal(service.buyUpgrade('s1', { channelId: ROOM, item: 'tool', tier: 1 }).cash, 500);
   assert.equal(p.toolTier, 0, 'bought, not equipped');
   assert.equal(buy({ channelId: ROOM, item: 'tool', tier: 1 }), REFUSED('Ez már megvan.'));
   p.cash = 1_000_000;

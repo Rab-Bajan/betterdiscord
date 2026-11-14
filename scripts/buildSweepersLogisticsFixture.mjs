@@ -57,7 +57,10 @@ const events = {
   personalUpdate: record('miskolc:personal_update'),
   structureSpawned: record('miskolc:structure_spawned'),
   logisticsUpdate: record('miskolc:logistics_update'),
-  logisticsTelemetry: record('miskolc:logistics_telemetry')
+  logisticsTelemetry: record('miskolc:logistics_telemetry'),
+  scaleWeighed: record('miskolc:scale_weighed'),
+  inspection: record('miskolc:inspection'),
+  economy: record('miskolc:economy')
 };
 const service = new SweepersService({
   store, events, clock, scheduler: () => () => undefined, logger: new Logger({ minLevel: 'error', sink: () => undefined })

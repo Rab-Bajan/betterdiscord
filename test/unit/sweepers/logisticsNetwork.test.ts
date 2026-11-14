@@ -234,10 +234,11 @@ test('telemetry formulas, the 1 Hz push to subscribers near the office, fence fa
   assert.ok(Math.abs(w.logistics.fenceFactor(hex) - 0.5) < 1e-9);
   assert.equal(w.room.debris.respawnFactor(hex), w.logistics.fenceFactor(hex));
 
-  const st = (type: number, i: number): Structure => ({ id: i + 1, type, x: 0, z: 0, rot: 0, lvl: 0, base: 0, flags: 0, rect: footprint(type, 0, 0, 0) });
+  const st = (type: number, i: number): Structure => ({ id: i + 1, type, x: 0, z: 0, rot: 0, lvl: 0, base: 0, flags: 0, wear: 0, rect: footprint(type, 0, 0, 0) });
   assert.equal(exceededCap(Array.from({ length: 60 }, (_, i) => st(TYPE.belt5, i)), TYPE.belt1), CAP_NAMES.beltM);
   assert.equal(exceededCap(Array.from({ length: 59 }, (_, i) => st(TYPE.belt5, i)), TYPE.belt5), null);
   assert.equal(exceededCap(Array.from({ length: CAPS.structures }, (_, i) => st(TYPE.fence, i)), TYPE.found2), CAP_NAMES.structures);
+  assert.equal(exceededCap(Array.from({ length: CAPS.machines }, (_, i) => st(TYPE.magnet, i)), TYPE.stripper), CAP_NAMES.machines);
   assert.equal(exceededCap(Array.from({ length: CAPS.junctions }, (_, i) => st(TYPE.merger, i)), TYPE.splitter), CAP_NAMES.junctions);
 });
 

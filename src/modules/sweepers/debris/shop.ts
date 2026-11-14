@@ -1,14 +1,17 @@
 // `miskolc:buy_upgrade` rules (plan C.4): location, level, ownership, cash. Pure over the personal state.
 import type { CityLayout } from '../city/layoutTypes.ts';
-import { notEnoughCash, SWEEPERS_ERRORS, SweepersError } from '../SweepersError.ts';
+import { notEnoughCash, notEnoughTeamFunds, SWEEPERS_ERRORS, SweepersError } from '../SweepersError.ts';
+import { DIESEL_CAN_FT, DIESEL_FULL_L, GREASE_GUN_FT, licensePrice } from '../economy/tables.ts';
 import { ownsTool } from './personal.ts';
 import type { PersonalData } from './personal.ts';
-import { bagTier } from '../logistics/tables.ts';
+import { bagTier, FIRST_MACHINE, machineOf, structSpec } from '../logistics/tables.ts';
 import {
   FUEL_COST, FUEL_TANK_ML, GLOVES_COST, HARD_COST, PACK_COST, REFRESHMENTS, REPAIR_SHARE, STAMINA_MAX, toolOf, WIDTH_COST
 } from './tables.ts';
 
-export const BUY_ITEMS = Object.freeze(['tool', 'width', 'pack', 'hard', 'gloves', 'repair', 'fuel', 'beer', 'kofola', 'zsiros', 'bag'] as const);
+export const BUY_ITEMS = Object.freeze([
+  'tool', 'width', 'pack', 'hard', 'gloves', 'repair', 'fuel', 'beer', 'kofola', 'zsiros', 'bag', 'grease', 'blueprint', 'diesel', 'license'
+] as const);
 /** Bag quantities per purchase (Phase D). */
 export const BAG_QTY = Object.freeze([1, 5, 10] as const);
 export type BuyItem = (typeof BUY_ITEMS)[number];
@@ -17,7 +20,7 @@ export type BuyItem = (typeof BUY_ITEMS)[number];
 export interface BuyRequest {
   channelId: string;
   item: BuyItem;
-  /** Tool id: 1..6 for `tool`, 1..3 for `repair`; bag tier 0..2 for `bag`. */
+  /** Tool id: 1..6 for `tool`, 1..3 for `repair`; bag tier 0..2 for `bag`; machine 0..3 for `blueprint`; district 1..5 for `license`. */
   tier?: number;
   /** Target level for width / pack / hard. */
   level?: number;
@@ -105,6 +108,15 @@ export function buy(data: PersonalData, request: BuyRequest, layout: CityLayout,
       pay(data, FUEL_COST);
       data.fuelMl = FUEL_TANK_ML;
       return 'Benzin';
+    case 'grease':
+      if (data.greaseGun) throw refuse('alreadyOwned');
+      pay(data, GREASE_GUN_FT);
+      data.greaseGun = true;
+      return 'Zsírzóprés';
+    case 'blueprint':
+    case 'diesel':
+    case 'license':
+      throw new Error(`team item ${item} is bought with teamPurchase`);
     case 'bag': {
       const tier = request.tier ?? 0;
       const qty = request.qty ?? 1;
@@ -123,4 +135,41 @@ export const repairPrice = (tier: number): number => Math.round(toolOf(tier).cos
 function pay(data: PersonalData, price: number): void {
   if (!Number.isFinite(price) || data.cash < price) throw new SweepersError(notEnoughCash(price), { reason: 'notEnoughCash', price });
   data.cash -= price;
+}
+
+/** What the team purse of a room offers a team purchase (E.2 shop). */
+export interface TeamPurse {
+  funds: number;
+  bp: number;
+  dieselL: number;
+  unlocked: ReadonlySet<number>;
+}
+
+/** A checked team purchase; the room applies it (funds − price, then the effect). */
+export type TeamPurchase =
+  | { item: 'blueprint'; bit: number; price: number; name: string }
+  | { item: 'diesel'; price: number; name: string }
+  | { item: 'license'; district: number; price: number; name: string };
+
+export const isTeamItem = (item: BuyItem): item is 'blueprint' | 'diesel' | 'license' => item === 'blueprint' || item === 'diesel' || item === 'license';
+
+/** Checks a team-paid purchase (location, item rules, team funds) without changing anything. */
+export function teamPurchase(request: BuyRequest, layout: CityLayout, x: number, z: number, purse: TeamPurse): TeamPurchase {
+  if (!atWorkbench(layout, x, z)) throw refuse('notAtWorkbench');
+  let purchase: TeamPurchase;
+  if (request.item === 'blueprint') {
+    const bit = request.tier ?? 0;
+    if ((purse.bp & (1 << bit)) !== 0) throw refuse('alreadyOwned');
+    const type = FIRST_MACHINE + bit;
+    purchase = { item: 'blueprint', bit, price: machineOf(type)?.blueprintFt ?? Infinity, name: structSpec(type).name };
+  } else if (request.item === 'diesel') {
+    if (purse.dieselL >= DIESEL_FULL_L) throw refuse('tankFull');
+    purchase = { item: 'diesel', price: DIESEL_CAN_FT, name: 'Gázolajkanna 20 L' };
+  } else {
+    const district = request.tier ?? 0;
+    if (purse.unlocked.has(district)) throw refuse('alreadyUnlocked');
+    purchase = { item: 'license', district, price: licensePrice(district), name: 'Kerületi engedély' };
+  }
+  if (!Number.isFinite(purchase.price) || purse.funds < purchase.price) throw notEnoughTeamFunds(purchase.price);
+  return purchase;
 }

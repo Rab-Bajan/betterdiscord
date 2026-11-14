@@ -64,15 +64,31 @@ export const SWEEPERS_ERRORS = Object.freeze({
   craneTargetBusy: 'A célhely foglalt.',
   notInCraneArea: 'Ez a zsák nincs a daru hatókörében.',
   hopperFull: 'Tele a garat.',
-  notAtTerminal: 'A logisztikai terminál a MÉH irodánál van.'
+  notAtTerminal: 'A logisztikai terminál a MÉH irodánál van.',
+  // Phase E (plan E.8).
+  notEnoughTeamFunds: 'Nincs elég pénz a csapatkasszában: {price} Ft kell.',
+  noBlueprint: 'Ehhez a géphez előbb meg kell venni a tervrajzot.',
+  alreadyUnlocked: 'Ez a kerület már nyitva van.',
+  notAtGenerator: 'A generátort csak mellette tudod kapcsolni.',
+  noDiesel: 'Kifogyott a gázolaj – vegyél kannát a MÉH irodában.',
+  noGreaseGun: 'Kell egy zsírzóprés (MÉH műhely).',
+  noGreaseNeeded: 'Ez a gép most nem szorul zsírzásra.',
+  notAtServicePoint: 'Menj közelebb egy kenési ponthoz.',
+  alreadyGreased: 'Ezt a pontot már megzsíroztad.'
 });
 
 /** A refusal with the D.8 / C.8 text of `key` (`SWEEPERS_REFUSED`). */
 export const refusal = (key: keyof typeof SWEEPERS_ERRORS, details: Record<string, unknown> = {}): SweepersError =>
   new SweepersError(SWEEPERS_ERRORS[key], { reason: key, ...details });
 
+const grouped = (price: number): string => String(Math.round(price)).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+
 /** `notEnoughCash` with the price filled in (thousands grouped with a space: 1 500). */
 export function notEnoughCash(price: number): string {
-  const grouped = String(Math.round(price)).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
-  return SWEEPERS_ERRORS.notEnoughCash.replace('{price}', grouped);
+  return SWEEPERS_ERRORS.notEnoughCash.replace('{price}', grouped(price));
+}
+
+/** `notEnoughTeamFunds` with the price filled in. */
+export function notEnoughTeamFunds(price: number): SweepersError {
+  return new SweepersError(SWEEPERS_ERRORS.notEnoughTeamFunds.replace('{price}', grouped(price)), { reason: 'notEnoughTeamFunds', price });
 }

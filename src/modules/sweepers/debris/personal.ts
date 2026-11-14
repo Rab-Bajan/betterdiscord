@@ -52,6 +52,8 @@ export interface PersonalData extends PersonalStats {
   bags: [number, number, number];
   /** The one-time starter bag kit has been given. */
   starterBags: boolean;
+  /** Zsírzóprés owned (Phase E, 89). */
+  greaseGun: boolean;
 }
 
 /** `miskolc:personal_update` and `init_state.personal`. */
@@ -70,10 +72,12 @@ export interface PersonalStatePayload extends PersonalStats {
   fx: Effects;
   /** Bag stock by tier (Phase D). */
   bags: [number, number, number];
+  /** Zsírzóprés owned (Phase E). */
+  greaseGun: boolean;
 }
 
 export const EFFECT_NAMES: readonly EffectName[] = Object.freeze(['stench', 'beer', 'kofola']);
-export const STATS_JSON_VERSION = 3;
+export const STATS_JSON_VERSION = 4;
 
 export const emptyLoad = (): Load => ({ dustG: 0, seedG: 0, cans: 0, crushed: 0, ironG: 0, copperG: 0, jackpots: [] });
 
@@ -144,7 +148,8 @@ export function personalPayload(data: PersonalData, now: number): PersonalStateP
     pack: loadPayload(data.pack),
     caps: { bufKg: bufferCap(data), packKg: packCapKg(data), packL: packCapL(data) },
     fx,
-    bags: [...data.bags]
+    bags: [...data.bags],
+    greaseGun: data.greaseGun
   };
 }
 
@@ -218,7 +223,8 @@ export function parsePersonal(stats: PersonalStats, extra: Record<string, unknow
     pack: parseLoad(json['pack']),
     fx,
     bags: [bagStock(0), bagStock(1), bagStock(2)],
-    starterBags: json['starterBags'] === true
+    starterBags: json['starterBags'] === true,
+    greaseGun: json['greaseGun'] === true
   };
   let granted = false;
   if (!data.starter) {
@@ -257,7 +263,8 @@ export function serialisePersonal(data: PersonalData, now: number): Record<strin
     clogged: data.clogged,
     fx,
     bags: [...data.bags],
-    starterBags: data.starterBags
+    starterBags: data.starterBags,
+    greaseGun: data.greaseGun
   };
 }
 

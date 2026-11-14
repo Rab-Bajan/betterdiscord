@@ -4,7 +4,7 @@ import { SWEEPERS_ERRORS, SweepersError } from './SweepersError.ts';
 import type { PlayerIdentity, SweepersPlayer } from './SweepersPlayer.ts';
 import type { SweepersStore } from './SweepersRepository.ts';
 import { NEW_PLAYER_STATS, SweepersRoom } from './SweepersRoom.ts';
-import type { SweepAck, TieAck } from './SweepersRoom.ts';
+import type { BuyAck, LogisticsAck, SweepAck, TieAck } from './SweepersRoom.ts';
 import { parsePersonal } from './debris/personal.ts';
 import type { PersonalData } from './debris/personal.ts';
 import type { BuyRequest } from './debris/shop.ts';
@@ -206,16 +206,18 @@ export class SweepersService {
     room.deleteStructure(player, id);
   }
 
-  /** `miskolc:logistics_action` (pickup, throw, clearJam, crane, telemetry); returns the ack. */
-  logisticsAction(socketId: string, action: LogisticsAction): ReturnType<SweepersRoom['logisticsAction']> {
+  /** `miskolc:logistics_action` (pickup, throw, clearJam, crane, telemetry, grease, generator); returns the ack. */
+  logisticsAction(socketId: string, action: LogisticsAction): LogisticsAck {
     const { room, player } = this.#playerOf(socketId, action.channelId);
     return room.logisticsAction(player, action, this.#clock.now());
   }
 
-  /** `miskolc:buy_upgrade`; returns the cash left (the personal update follows with the next tick). */
-  buyUpgrade(socketId: string, request: BuyRequest): number {
+  /** `miskolc:buy_upgrade`; returns the cash and team funds left (personal / economy updates follow with the next tick; a licence unlocks at once). */
+  buyUpgrade(socketId: string, request: BuyRequest): BuyAck {
     const { room, player } = this.#playerOf(socketId, request.channelId);
-    return room.buyUpgrade(player, request, this.#clock.now());
+    const balances = room.buyUpgrade(player, request, this.#clock.now());
+    this.#announceUnlocks(room);
+    return balances;
   }
 
   /** Throws `notInRoom` unless the socket plays in the channel's world. */
@@ -247,6 +249,12 @@ export class SweepersService {
       }
       const logistics = room.takeLogisticsUpdate(now);
       if (logistics) this.#events.logisticsUpdate(room.channelId, logistics);
+      for (const weighed of room.takeWeighings()) this.#events.scaleWeighed(room.channelId, weighed);
+      const inspection = room.takeInspection();
+      if (inspection) this.#events.inspection(room.channelId, inspection);
+      const economy = room.takeEconomyUpdate(now);
+      if (economy) this.#events.economy(room.channelId, economy);
+      this.#announceUnlocks(room);
       this.#advanceWeather(room, now);
       if (now - room.lastClockSyncAt >= this.#timings.clockSyncMs) {
         room.lastClockSyncAt = now;
@@ -258,7 +266,7 @@ export class SweepersService {
   }
 
   /**
-   * Adds team revenue (Ft) to a loaded world's lifetime total (producer: the Phase E weighbridge)
+   * Adds team revenue (Ft) to a loaded world's lifetime total (the weighbridge itself pays inside the room)
    * and opens the districts whose thresholds it reaches: each emits `miskolc:district_unlocked`, and
    * the world is saved at once. Returns the newly opened district ids.
    */
@@ -266,14 +274,24 @@ export class SweepersService {
     const room = this.#rooms.get(channelId);
     if (!room) throw new SweepersError(SWEEPERS_ERRORS.roomNotLoaded, { channelId });
     const opened = room.addRevenue(amount);
-    if (opened.length === 0) return opened;
+    this.#announce(room, opened);
+    return opened;
+  }
+
+  /** Announces the districts a room opened by itself (weighing, coins, licence). */
+  #announceUnlocks(room: SweepersRoom): void {
+    this.#announce(room, room.takeOpened());
+  }
+
+  /** Each opened district emits `miskolc:district_unlocked`, then the world is saved at once. */
+  #announce(room: SweepersRoom, opened: readonly number[]): void {
+    if (opened.length === 0) return;
     const unlockedDistricts = room.unlockedDistricts();
     for (const district of opened) {
-      this.#log.info(`MiskolcSweepers kerület megnyílt: ${channelId} / ${district}`);
-      this.#events.districtUnlocked(channelId, { district, unlockedDistricts });
+      this.#log.info(`MiskolcSweepers kerület megnyílt: ${room.channelId} / ${district}`);
+      this.#events.districtUnlocked(room.channelId, { district, unlockedDistricts });
     }
     this.#save(room, this.#clock.now());
-    return opened;
   }
 
   summaries(): Record<string, SweepersSessionSummary> {

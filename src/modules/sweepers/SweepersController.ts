@@ -152,7 +152,7 @@ export class SweepersController extends SocketController {
 
     this.listen(socket, SWEEPERS_EVENTS.buyUpgrade, (payload) => {
       if (!this.#buyLimit.take(socket.id)) throw rateLimited();
-      return { ok: true, cash: this.#service.buyUpgrade(socket.id, parseBuyUpgrade(payload)) };
+      return { ok: true, ...this.#service.buyUpgrade(socket.id, parseBuyUpgrade(payload)) };
     });
 
     socket.on('disconnect', () => {

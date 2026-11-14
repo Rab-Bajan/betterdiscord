@@ -1,10 +1,12 @@
-// MiskolcSweepers wire protocol (Phases A–D). Units: metres, y-up, rotation in radians.
+// MiskolcSweepers wire protocol (Phases A–E). Units: metres, y-up, rotation in radians.
 // Later phases extend these shapes; they never rename a field or an event.
 
 import type { CityLayout } from './city/layoutTypes.ts';
 import type { ClockState } from './dayClock.ts';
 import type { ItemRow, KickRow } from './debris/DebrisWorld.ts';
 import type { PersonalStatePayload } from './debris/personal.ts';
+import type { EconomyInit } from './economy/Economy.ts';
+import type { ReceiptLine } from './economy/payout.ts';
 import type { LogisticsInit, StructRow } from './logistics/LogisticsWorld.ts';
 import type { WeatherPayload } from './weather.ts';
 
@@ -40,7 +42,10 @@ export const SWEEPERS_EVENTS = Object.freeze({
   logisticsAction: 'miskolc:logistics_action',
   structureSpawned: 'miskolc:structure_spawned',
   logisticsUpdate: 'miskolc:logistics_update',
-  logisticsTelemetry: 'miskolc:logistics_telemetry'
+  logisticsTelemetry: 'miskolc:logistics_telemetry',
+  scaleWeighed: 'miskolc:scale_weighed',
+  inspection: 'miskolc:inspection',
+  economy: 'miskolc:economy'
 } as const);
 
 /** Position, heading and activity of a player. */
@@ -107,6 +112,27 @@ export interface InitStatePayload {
   debris: DebrisInfo;
   /** The logistics network (Phase D). */
   logistics: LogisticsInit;
+  /** Power grid, blueprints, LME and inspector (Phase E). */
+  economy: EconomyInit;
+}
+
+/** `miskolc:scale_weighed` (spec name), room-wide after a weighing (Phase E). */
+export interface ScaleWeighedPayload {
+  /** 0 the weighbridge, 1 the crane pad. */
+  scale: 0 | 1;
+  /** Short id of the weigher. */
+  by: number;
+  kgDg: number;
+  lines: ReceiptLine[];
+  dirtyFt: number;
+  total: number;
+  /** Ft into the team funds. */
+  team: number;
+  /** Ft wage to each player in `to`. */
+  each: number;
+  to: number[];
+  /** LME epoch of the sale. */
+  epoch: number;
 }
 
 /** `miskolc:structure_spawned`, room-wide on a place. */

@@ -42,7 +42,10 @@ const events = {
   personalUpdate: record('miskolc:personal_update'),
   structureSpawned: () => undefined,
   logisticsUpdate: () => undefined,
-  logisticsTelemetry: () => undefined
+  logisticsTelemetry: () => undefined,
+  scaleWeighed: () => undefined,
+  inspection: () => undefined,
+  economy: () => undefined
 };
 const service = new SweepersService({
   store, events, clock, scheduler: () => () => undefined, logger: new Logger({ minLevel: 'error', sink: () => undefined })

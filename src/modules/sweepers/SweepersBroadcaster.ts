@@ -2,10 +2,11 @@ import type { Server } from 'socket.io';
 import { SWEEPERS_EVENTS } from './types.ts';
 import type { ClockSync } from './dayClock.ts';
 import type { PersonalStatePayload } from './debris/personal.ts';
+import type { EconomyUpdate, InspectionPayload } from './economy/Economy.ts';
 import type { LogisticsTelemetry, LogisticsUpdate } from './logistics/LogisticsWorld.ts';
 import type {
-  DebrisChunkUpdate, DistrictUnlockedPayload, InitStatePayload, PlayerSnapshot, StructureSpawnedPayload, SweepersKickedPayload,
-  SweepersSessionSummary, SweepersSessionUpdate, TickSyncPayload
+  DebrisChunkUpdate, DistrictUnlockedPayload, InitStatePayload, PlayerSnapshot, ScaleWeighedPayload, StructureSpawnedPayload,
+  SweepersKickedPayload, SweepersSessionSummary, SweepersSessionUpdate, TickSyncPayload
 } from './types.ts';
 import type { WeatherPayload } from './weather.ts';
 
@@ -38,6 +39,12 @@ export interface SweepersEvents {
   logisticsUpdate(channelId: string, payload: LogisticsUpdate): void;
   /** `miskolc:logistics_telemetry` to one subscribed socket (1 Hz). */
   logisticsTelemetry(socketId: string, payload: LogisticsTelemetry): void;
+  /** `miskolc:scale_weighed` to the world (Phase E). */
+  scaleWeighed(channelId: string, payload: ScaleWeighedPayload): void;
+  /** `miskolc:inspection` to the world. */
+  inspection(channelId: string, payload: InspectionPayload): void;
+  /** `miskolc:economy` to the world, at most once per tick. */
+  economy(channelId: string, payload: EconomyUpdate): void;
 }
 
 /** {@link SweepersEvents} over socket.io. */
@@ -103,6 +110,18 @@ export class SweepersBroadcaster implements SweepersEvents {
 
   logisticsTelemetry(socketId: string, payload: LogisticsTelemetry): void {
     this.#io.to(socketId).emit(SWEEPERS_EVENTS.logisticsTelemetry, payload);
+  }
+
+  scaleWeighed(channelId: string, payload: ScaleWeighedPayload): void {
+    this.#io.to(sweepersRoomOf(channelId)).emit(SWEEPERS_EVENTS.scaleWeighed, payload);
+  }
+
+  inspection(channelId: string, payload: InspectionPayload): void {
+    this.#io.to(sweepersRoomOf(channelId)).emit(SWEEPERS_EVENTS.inspection, payload);
+  }
+
+  economy(channelId: string, payload: EconomyUpdate): void {
+    this.#io.to(sweepersRoomOf(channelId)).emit(SWEEPERS_EVENTS.economy, payload);
   }
 
   /** To the voice channel and the world's players (as phobia does), not the whole server. */

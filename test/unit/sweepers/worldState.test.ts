@@ -135,7 +135,7 @@ test('state_json: a weather record from another timeline is replaced by a fresh 
 });
 
 test('state_json: a Phase A row ({ v: 1 }) or garbage loads as defaults; v4 round-trips', () => {
-  const defaults = { lifetimeEarned: 0, unlockedDistricts: [0], clock: { timeMs: 0, day: 1 }, weather: freshWeather('room-1'), debris: null, logistics: null };
+  const defaults = { lifetimeEarned: 0, unlockedDistricts: [0], clock: { timeMs: 0, day: 1 }, weather: freshWeather('room-1'), debris: null, logistics: null, economy: null };
   assert.deepEqual(parseRoomState({ v: 1 }, 'room-1'), defaults);
   assert.deepEqual(parseRoomState({}, 'room-1'), defaults);
   assert.deepEqual(parseRoomState({
@@ -150,11 +150,14 @@ test('state_json: a Phase A row ({ v: 1 }) or garbage loads as defaults; v4 roun
     clock: { timeMs: 123_456, day: 7 },
     weather: { kind: 'drizzle' as const, until: 9_000_000, nextStart: 12_000_000, rng: 42 },
     debris: { gen: 1, cells: '', items: [], next: [], respawnInMs: 0 },
-    logistics: { v: 1, bags: [], cargo: [], hoppers: [], packagers: [], crane: { hook: [-850, 0] } }
+    logistics: { v: 1, bags: [], cargo: [], hoppers: [], packagers: [], crane: { hook: [-850, 0] } },
+    economy: { v: 1, battWh: 1000, dieselL: 3, genOn: true, bp: 5, inspInMs: 60_000, kg: [0, 1, 2, 3, 4, 5] }
   };
   const stored = JSON.parse(JSON.stringify(serialiseRoomState(world))) as Record<string, unknown>;
   assert.equal(stored['v'], ROOM_STATE_VERSION);
   assert.deepEqual(parseRoomState(stored, 'room-1'), world);
+  // The economy key is read for any version (E.6); `v` stays 4.
+  assert.deepEqual(parseRoomState({ v: 3, economy: world.economy }, 'r').economy, world.economy);
   // A v3 row keeps its debris and loads an empty network.
   assert.deepEqual(parseRoomState({ v: 3, debris: world.debris, logistics: world.logistics }, 'r').logistics, null);
   assert.deepEqual(parseRoomState({ v: 3, debris: world.debris }, 'r').debris, world.debris);

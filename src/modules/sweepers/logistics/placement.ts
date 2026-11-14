@@ -6,7 +6,7 @@ import { hexAt } from '../hexGrid.ts';
 import { refusal, SWEEPERS_ERRORS, SweepersError } from '../SweepersError.ts';
 import { blocksPlayers, footprint, footprintSamples, inRect, rectHitsCircle, rectHitsCollider, rectsOverlap, shrink } from './shapes.ts';
 import type { Rect, Structure } from './shapes.ts';
-import { CAP_NAMES, CAPS, CRANE, isBeltLike, isFoundation, structSpec, TYPE } from './tables.ts';
+import { CAP_NAMES, CAPS, CRANE, FIRST_MACHINE, isBeltLike, isFoundation, isMachine, structSpec, TYPE } from './tables.ts';
 
 export const PLACE_REACH_M = 10;
 export const MAX_ABS_XZ = 256;
@@ -32,6 +32,8 @@ export interface PlacementWorld {
   structures: readonly Structure[];
   groundBags: ReadonlyArray<{ x: number; z: number; r: number }>;
   players: ReadonlyArray<{ x: number; z: number }>;
+  /** Bought machine blueprints (bit = type − 14, Phase E rule 5b). */
+  blueprints: number;
 }
 
 /** The crane legs: cylinders at the working-area corners, added to every room's colliders. */
@@ -71,6 +73,7 @@ export function exceededCap(structures: Iterable<Structure>, type: number): stri
   let hoppers = 0;
   let packagers = 0;
   let fences = 0;
+  let machines = 0;
   for (const s of structures) {
     total++;
     if (isFoundation(s.type)) found++;
@@ -79,6 +82,7 @@ export function exceededCap(structures: Iterable<Structure>, type: number): stri
     if (s.type === TYPE.hopper) hoppers++;
     if (s.type === TYPE.packager) packagers++;
     if (s.type === TYPE.fence) fences++;
+    if (isMachine(s.type)) machines++;
   }
   if (total + 1 > CAPS.structures) return CAP_NAMES.structures;
   if (isFoundation(type) && found + 1 > CAPS.foundations) return CAP_NAMES.foundations;
@@ -87,6 +91,7 @@ export function exceededCap(structures: Iterable<Structure>, type: number): stri
   if (type === TYPE.hopper && hoppers + 1 > CAPS.hoppers) return CAP_NAMES.hoppers;
   if (type === TYPE.packager && packagers + 1 > CAPS.packagers) return CAP_NAMES.packagers;
   if (type === TYPE.fence && fences + 1 > CAPS.fences) return CAP_NAMES.fences;
+  if (isMachine(type) && machines + 1 > CAPS.machines) return CAP_NAMES.machines;
   return null;
 }
 
@@ -102,8 +107,8 @@ function edgeAdjacent(a: Rect, b: Rect): boolean {
 }
 
 /**
- * Checks D.3 rules 2–7 in order and returns the base height (a foundation's top). `pose` null skips
- * rule 2 and `caps` false skips rule 5 (persistence reload applies caps itself, in id order).
+ * Checks D.3 rules 2–7 (with E's 5b, the blueprint) in order and returns the base height (a foundation's
+ * top). `pose` null skips rule 2 and `caps` false skips rule 5 (persistence reload applies caps itself, in id order).
  */
 export function checkPlacement(world: PlacementWorld, spec: PlaceSpec, pose: { x: number; z: number } | null, caps = true): number {
   const rect = footprint(spec.type, spec.x, spec.z, spec.rot);
@@ -122,6 +127,7 @@ export function checkPlacement(world: PlacementWorld, spec: PlaceSpec, pose: { x
     const what = exceededCap(structures, spec.type);
     if (what !== null) throw new SweepersError(SWEEPERS_ERRORS.buildLimit.replace('{what}', what), { reason: 'buildLimit', what });
   }
+  if (isMachine(spec.type) && (world.blueprints & (1 << (spec.type - FIRST_MACHINE))) === 0) throw refusal('noBlueprint');
   const cx = (rect.minX + rect.maxX) / 2;
   const cz = (rect.minZ + rect.maxZ) / 2;
   const reach = Math.hypot(rect.maxX - rect.minX, rect.maxZ - rect.minZ) / 2;

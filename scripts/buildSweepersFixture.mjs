@@ -34,7 +34,15 @@ const events = {
   districtUnlocked: record('miskolc:district_unlocked'),
   clock: record('miskolc:clock'),
   clockTo: record('miskolc:clock'),
-  weather: record('miskolc:weather')
+  weather: record('miskolc:weather'),
+  debrisUpdate: () => undefined,
+  personalUpdate: () => undefined,
+  structureSpawned: () => undefined,
+  logisticsUpdate: () => undefined,
+  logisticsTelemetry: () => undefined,
+  scaleWeighed: () => undefined,
+  inspection: () => undefined,
+  economy: () => undefined
 };
 const service = new SweepersService({
   store, events, clock, scheduler: () => () => undefined, logger: new Logger({ minLevel: 'error', sink: () => undefined })

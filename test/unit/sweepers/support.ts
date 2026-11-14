@@ -79,6 +79,9 @@ export class RecordingEvents implements SweepersEvents {
   structureSpawned(...args: Parameters<SweepersEvents['structureSpawned']>): void { this.log.push(['structureSpawned', ...args]); }
   logisticsUpdate(...args: Parameters<SweepersEvents['logisticsUpdate']>): void { this.log.push(['logisticsUpdate', ...args]); }
   logisticsTelemetry(...args: Parameters<SweepersEvents['logisticsTelemetry']>): void { this.log.push(['logisticsTelemetry', ...args]); }
+  scaleWeighed(...args: Parameters<SweepersEvents['scaleWeighed']>): void { this.log.push(['scaleWeighed', ...args]); }
+  inspection(...args: Parameters<SweepersEvents['inspection']>): void { this.log.push(['inspection', ...args]); }
+  economy(...args: Parameters<SweepersEvents['economy']>): void { this.log.push(['economy', ...args]); }
 
   /** Recorded calls of `name`, removing nothing. */
   of(name: string): unknown[][] {
