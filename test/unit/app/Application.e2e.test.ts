@@ -4,17 +4,18 @@ import { TestApp, waitFor } from '../support/TestApp.ts';
 import { LEGACY_MODULE_ORDER } from '../../../src/app/index.ts';
 import { MIGRATED_MODULES } from '../../../src/modules/migratedModules.ts';
 
-// Exactly what legacy authHandler.js + server.js put into init:data, in order.
+// Exactly what legacy authHandler.js + server.js put into init:data, in order, then the
+// key of the TypeScript-only sweepers module.
 const INIT_DATA_KEYS = [
   'self', 'textChannels', 'voiceChannels', 'voiceStates', 'onlineUsers',
   'channelMessages', 'casinoSessions', 'watchSessions', 'chessSessions',
-  'browserSessions', 'empireSessions', 'phobiaSessions'
+  'browserSessions', 'empireSessions', 'phobiaSessions', 'sweepersSessions'
 ];
 
-// Legacy server.js voiceHandler room-join callback order.
+// Legacy server.js voiceHandler room-join callback order, then sweepers.
 const ROOM_STATE_EVENTS = [
   'game:session-updated', 'whiteboard:list', 'code:tree-data', 'watch:state',
-  'browser:state', 'empire:session-updated', 'phobia:session-updated'
+  'browser:state', 'empire:session-updated', 'phobia:session-updated', 'miskolc:session-updated'
 ];
 
 let t: TestApp;
@@ -30,7 +31,7 @@ test('boots with the startup line and one controller per module, in server.js or
   for (const { name, source } of t.app.mountedModules) assert.equal(source, migrated.has(name) ? 'override' : 'legacy', name);
   assert.deepEqual([...LEGACY_MODULE_ORDER], [
     'casino', 'watchParty', 'chess', 'codeEditor', 'dm', 'browser', 'call', 'chat', 'whiteboard',
-    'game', 'empire', 'phobia', 'speedTest', 'voice', 'auth', 'admin'
+    'game', 'empire', 'phobia', 'speedTest', 'voice', 'auth', 'admin', 'sweepers'
   ]);
 });
 
@@ -41,7 +42,7 @@ test('init:data carries every legacy key in legacy order', async () => {
   assert.equal((init['self'] as { id: string }).id, client.id);
   const messages = init['channelMessages'] as Record<string, Array<{ id: string }>>;
   assert.equal(messages['altalanos']?.[0]?.id, 'welcome-1');
-  for (const key of ['casinoSessions', 'watchSessions', 'chessSessions', 'browserSessions', 'empireSessions', 'phobiaSessions']) {
+  for (const key of ['casinoSessions', 'watchSessions', 'chessSessions', 'browserSessions', 'empireSessions', 'phobiaSessions', 'sweepersSessions']) {
     assert.deepEqual(init[key], {}, key);
   }
   client.close();
@@ -60,14 +61,16 @@ test('chat:message round-trips to a second client', async () => {
   b.client.close();
 });
 
-test('voice:join emits the 7 room-state events in legacy order', async () => {
+test('voice:join emits the 7 legacy room-state events in legacy order, then sweepers', async () => {
   const { client } = await t.joinAsGuest('Voicey');
   const seen: string[] = [];
   client.onAny((event: string) => { if (ROOM_STATE_EVENTS.includes(event)) seen.push(event); });
   const joined = waitFor<{ channelId: string }>(client, 'voice:joined');
-  const last = waitFor<{ channelId: string; state: unknown }>(client, 'phobia:session-updated');
+  const phobia = waitFor<{ channelId: string; state: unknown }>(client, 'phobia:session-updated');
+  const last = waitFor<{ channelId: string; state: unknown }>(client, 'miskolc:session-updated');
   client.emit('voice:join', { channelId: 'hang-chill' });
   assert.equal((await joined).channelId, 'hang-chill');
+  assert.deepEqual(await phobia, { channelId: 'hang-chill', state: null });
   assert.deepEqual(await last, { channelId: 'hang-chill', state: null });
   assert.deepEqual(seen, ROOM_STATE_EVENTS);
   assert.equal(t.app.presence.getVoiceChannelState()['hang-chill']?.[0]?.username, 'Voicey');

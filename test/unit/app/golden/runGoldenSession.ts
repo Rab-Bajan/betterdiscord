@@ -654,6 +654,18 @@ async function play(port: number): Promise<{ transcripts: Record<string, Transcr
   return { transcripts: { alice: a, bob: b, carol: c, dave: d, erin: e }, ids };
 }
 
+/**
+ * MiskolcSweepers has no legacy counterpart: its `miskolc:*` events and its `sweepersSessions`
+ * init:data key are additions (covered by test/unit/sweepers), left out of the legacy comparison.
+ */
+function withoutSweepers(transcripts: Record<string, Transcript>): Record<string, Transcript> {
+  const strip = ([event, payload]: [string, unknown]): [string, unknown] => {
+    if (event !== 'init:data' || typeof payload !== 'object' || payload === null) return [event, payload];
+    return [event, Object.fromEntries(Object.entries(payload).filter(([key]) => key !== 'sweepersSessions'))];
+  };
+  return Object.fromEntries(Object.entries(transcripts).map(([who, t]) => [who, t.filter(([event]) => !event.startsWith('miskolc:')).map(strip)]));
+}
+
 /** Replaces socket ids, Date.now() stamps, locale times, generated ids and auth tokens with placeholders. */
 function normalise(value: unknown, ids: string[]): unknown {
   const text = JSON.stringify(value, function (this: unknown, key: string, v: unknown) {
@@ -681,7 +693,7 @@ try {
   const { transcripts, ids } = await play(booted.port);
   await booted.close();
   // stdout is an async pipe here: exit only once the whole transcript is flushed, or it is truncated.
-  process.stdout.write(`\nGOLDEN:${JSON.stringify(normalise(transcripts, ids))}\n`, () => process.exit(0));
+  process.stdout.write(`\nGOLDEN:${JSON.stringify(normalise(withoutSweepers(transcripts), ids))}\n`, () => process.exit(0));
 } catch (err) {
   // The process guards would swallow this and leave the run hanging: fail fast instead.
   process.stderr.write(`golden session failed: ${err instanceof Error ? err.stack ?? err.message : String(err)}\n`, () => process.exit(1));

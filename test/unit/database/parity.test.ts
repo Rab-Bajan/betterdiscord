@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import type Database from 'better-sqlite3';
-import { SchemaMigrator, SqliteDatabase } from '../../../src/infrastructure/database/index.ts';
+import { NON_LEGACY_TABLES, SchemaMigrator, SqliteDatabase } from '../../../src/infrastructure/database/index.ts';
 import { makeTmpDir, repositoriesFor, schemaSnapshot } from './support.ts';
 
 type Fn = (...args: unknown[]) => unknown;
@@ -94,12 +94,18 @@ function both(name: string, ...args: unknown[]): Outcome {
 }
 
 function dumpTables(db: Database.Database): Record<string, unknown[]> {
-  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as { name: string }[];
+  const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as { name: string }[])
+    .filter(({ name }) => !NON_LEGACY_TABLES.includes(name));
   return Object.fromEntries(tables.map(({ name }) => [name, db.prepare(`SELECT * FROM "${name.replaceAll('"', '""')}" ORDER BY rowid`).all()]));
 }
 
+// The new schema = the legacy schema plus NON_LEGACY_TABLES (no legacy counterpart), so legacy
+// comparisons leave those additions out.
+const legacyOnly = { legacyOnly: true };
+
 test('fresh schema is identical (sqlite_master + PRAGMA table_info)', () => {
-  assert.deepStrictEqual(schemaSnapshot(database.connection), schemaSnapshot(legacy.db));
+  assert.deepStrictEqual(schemaSnapshot(database.connection, legacyOnly), schemaSnapshot(legacy.db));
+  assert.deepStrictEqual(schemaSnapshot(legacy.db, legacyOnly), schemaSnapshot(legacy.db), 'legacy has none of the additions');
   assert.deepStrictEqual(database.connection.pragma('journal_mode'), legacy.db.pragma('journal_mode'));
 });
 
@@ -248,7 +254,7 @@ test('opening a legacy-created file with SqliteDatabase leaves its schema unchan
   const before = schemaSnapshot(legacy.db);
   const reopened = new SqliteDatabase(legacyPath);
   try {
-    assert.deepStrictEqual(schemaSnapshot(reopened.connection), before);
+    assert.deepStrictEqual(schemaSnapshot(reopened.connection, legacyOnly), before);
   } finally {
     reopened.close();
   }
@@ -279,7 +285,8 @@ test('upgrading a pre-migration file reaches the legacy schema', () => {
   new SqliteDatabase(file, preMigration).close();
   const upgraded = new SqliteDatabase(file);
   try {
-    assert.deepStrictEqual(schemaSnapshot(upgraded.connection), schemaSnapshot(legacy.db));
+    // legacy.db itself was reopened (and so extended) by SqliteDatabase in the previous test.
+    assert.deepStrictEqual(schemaSnapshot(upgraded.connection, legacyOnly), schemaSnapshot(legacy.db, legacyOnly));
   } finally {
     upgraded.close();
   }

@@ -151,7 +151,55 @@ const PHOBIA_SQL = `
   );
 `;
 
-/** Schema steps in the exact order database.js applies them. */
+// MiskolcSweepers (no legacy counterpart: these tables are additions after the legacy schema).
+const MISKOLC_SWEEPERS_SQL = `
+  CREATE TABLE IF NOT EXISTS miskolc_rooms (
+    room_id TEXT PRIMARY KEY,
+    state_json TEXT,
+    district_cleanliness_json TEXT,
+    team_funds INTEGER,
+    last_saved INTEGER
+  );
+
+  CREATE TABLE IF NOT EXISTS miskolc_player_stats (
+    user_id TEXT,
+    room_id TEXT,
+    personal_cash INTEGER,
+    equipped_tool_tier INTEGER,
+    backpack_tier INTEGER,
+    total_kg_swept REAL,
+    PRIMARY KEY (user_id, room_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_miskolc_player_stats_room ON miskolc_player_stats(room_id);
+
+  CREATE TABLE IF NOT EXISTS miskolc_world_structures (
+    id TEXT PRIMARY KEY,
+    room_id TEXT,
+    type TEXT,
+    x REAL,
+    y REAL,
+    z REAL,
+    rot_y REAL,
+    config_json TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_miskolc_world_structures_room ON miskolc_world_structures(room_id);
+`;
+
+/** The MiskolcSweepers tables; the sweepers module also applies this step to the shared legacy connection. */
+export const MISKOLC_SWEEPERS_MIGRATION: Migration = execStep('miskolc_sweepers', MISKOLC_SWEEPERS_SQL);
+
+/** MiskolcSweepers Phase C: the personal state beyond the four v1 columns (see sweepers debris/personal.ts). */
+export const MISKOLC_STATS_JSON_MIGRATION: Migration = addColumnStep(
+  'miskolc_player_stats.stats_json',
+  'miskolc_player_stats',
+  'stats_json',
+  'ALTER TABLE miskolc_player_stats ADD COLUMN stats_json TEXT'
+);
+
+/** Tables (and their indexes) that exist only in the new schema, never in legacy database.js. */
+export const NON_LEGACY_TABLES: readonly string[] = Object.freeze(['miskolc_rooms', 'miskolc_player_stats', 'miskolc_world_structures']);
+
+/** Schema steps in the exact order database.js applies them, then the additions without a legacy counterpart. */
 export const MIGRATIONS: readonly Migration[] = [
   execStep('accounts', ACCOUNTS_SQL),
   execStep('channel_messages', CHANNEL_MESSAGES_SQL),
@@ -171,5 +219,7 @@ export const MIGRATIONS: readonly Migration[] = [
   execStep('calls', CALLS_SQL),
   execStep('dm_reports', DM_REPORTS_SQL),
   execStep('auth_tokens', AUTH_TOKENS_SQL),
-  execStep('phobia', PHOBIA_SQL)
+  execStep('phobia', PHOBIA_SQL),
+  MISKOLC_SWEEPERS_MIGRATION,
+  MISKOLC_STATS_JSON_MIGRATION
 ];

@@ -9,7 +9,9 @@
     "test": "node --test --import ./test/support/isolatedDb.cjs analysis/test/*.test.js game/test/*.test.js miskolcEmpire/test/*.test.js test/*.test.js \"test/unit/**/*.test.ts\"",
     "test:unit": "node --test --import ./test/support/isolatedDb.cjs \"test/unit/**/*.test.ts\"",
     "test:e2e:phobia": "node --import ./test/support/isolatedDb.cjs test_phobia_backend.js",
-    "build:openings": "node scripts/buildOpenings.js"
+    "build:openings": "node scripts/buildOpenings.js",
+    "build:sweepers-fixture": "node scripts/buildSweepersFixture.mjs",
+    "build:sweepers-debris-fixture": "node scripts/buildSweepersDebrisFixture.mjs"
   },
   "keywords": [],
   "author": "",

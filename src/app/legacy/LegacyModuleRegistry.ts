@@ -9,12 +9,14 @@ import { LegacyModuleAdapter } from '../../infrastructure/socket/LegacyModuleAda
 import type { SocketServer } from '../../infrastructure/socket/SocketServer.ts';
 import type { PresenceService } from '../../modules/presence/PresenceService.ts';
 import type { UserRegistry } from '../../modules/presence/UserRegistry.ts';
-import { INITIAL_STATE_ORDER, MODULE_ORDER, ROOM_STATE_ORDER } from '../modules/ModuleFactory.ts';
+import { INITIAL_STATE_ORDER, MODULE_ORDER, ROOM_STATE_ORDER, TS_ONLY_MODULES } from '../modules/ModuleFactory.ts';
 import type {
-  DatabaseConnection, ModuleApis, ModuleDeps, ModuleFactory, ModuleName, ModuleOverrides, ModuleRegistration
+  DatabaseConnection, LegacyModuleName, ModuleApis, ModuleDeps, ModuleFactory, ModuleName, ModuleOverrides, ModuleRegistration
 } from '../modules/ModuleFactory.ts';
 import { LEGACY_DEFINITIONS } from './legacyDefinitions.ts';
 import type * as L from './legacyModules.ts';
+
+const isLegacyModule = (name: ModuleName): name is LegacyModuleName => !(TS_ONLY_MODULES as readonly ModuleName[]).includes(name);
 
 /** Kept for existing imports: the same list as {@link MODULE_ORDER}. */
 export const LEGACY_MODULE_ORDER = MODULE_ORDER;
@@ -41,8 +43,9 @@ export interface MountedModule {
 /**
  * Mounts every socket module in {@link MODULE_ORDER}: the legacy module
  * (behind a LegacyModuleAdapter, exactly as server.js wired it) or its
- * override. Controllers are registered in module order; providers are slotted
- * into the legacy room-state / init-data order by module name.
+ * override. A TypeScript-only module (no legacy handler) is mounted only when
+ * an override provides it. Controllers are registered in module order;
+ * providers are slotted into the legacy room-state / init-data order by module name.
  */
 export class LegacyModuleRegistry {
   readonly #ctx: LegacyWiringContext;
@@ -81,10 +84,23 @@ export class LegacyModuleRegistry {
     routes.serveFrontend(app);
   }
 
+  /** Disposes every mounted module that has a `dispose` hook, in reverse mount order. Errors are logged. */
+  disposeModules(): void {
+    for (const { name } of [...this.mounted].reverse()) {
+      try {
+        this.#registrations.get(name)?.dispose?.();
+      } catch (err) {
+        this.#ctx.logger.error(`Disposing module "${name}" failed`, err);
+      }
+    }
+  }
+
   #mountOne(name: ModuleName, usersMap: L.UsersMap): void {
     const override = this.#ctx.overrides?.[name];
+    const legacy = isLegacyModule(name) ? LEGACY_DEFINITIONS[name] : undefined;
+    if (!override && !legacy) return;
     // Each factory is typed for its own name; the map lookup erases that, the registration is stored as unknown.
-    const factory = (override ?? LEGACY_DEFINITIONS[name]) as ModuleFactory;
+    const factory = (override ?? legacy) as ModuleFactory;
     const registration = factory(this.#deps(name, usersMap)) as ModuleRegistration<unknown>;
     if (registration.controller) this.#ctx.socketServer.addController(registration.controller);
     this.#apis.set(name, registration.api);

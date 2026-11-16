@@ -43,6 +43,7 @@ interface Runtime {
   presence: PresenceService;
   users: UserRegistry;
   phobia: LegacyPhobia;
+  registry: LegacyModuleRegistry;
   mounted: readonly MountedModule[];
 }
 
@@ -83,11 +84,12 @@ export class Application {
     return address;
   }
 
-  /** Stops the phobia tick loop, closes socket.io and the HTTPS server (incl. keep-alive connections). */
+  /** Stops the phobia tick loop, disposes the modules, closes socket.io and the HTTPS server (incl. keep-alive connections). */
   async stop(): Promise<void> {
     const runtime = this.#runtime;
     if (!runtime) return;
     clearInterval(runtime.phobia.tickInterval);
+    runtime.registry.disposeModules();
     runtime.httpServer.closeAllConnections();
     await runtime.io.close();
   }
@@ -115,7 +117,7 @@ export class Application {
     const phobia = registry.mountSocketModules();
     registry.mountHttpRoutes();
     socketServer.start();
-    return { app, httpServer, io, socketServer, users, presence, phobia, mounted: registry.mounted };
+    return { app, httpServer, io, socketServer, users, presence, phobia, registry, mounted: registry.mounted };
   }
 
   #loadState(backendRoot: string): LegacyState {
